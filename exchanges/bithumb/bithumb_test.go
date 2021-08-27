@@ -1,6 +1,7 @@
 package bithumb
 
 import (
+	"errors"
 	"log"
 	"os"
 	"testing"
@@ -211,7 +212,8 @@ func TestRequestKRWWithdraw(t *testing.T) {
 
 func TestMarketBuyOrder(t *testing.T) {
 	t.Parallel()
-	_, err := b.MarketBuyOrder(testCurrency, 0)
+	p := currency.NewPair(currency.BTC, currency.KRW)
+	_, err := b.MarketBuyOrder(p, 0)
 	if err == nil {
 		t.Error("Bithumb MarketBuyOrder() Expected error")
 	}
@@ -219,7 +221,8 @@ func TestMarketBuyOrder(t *testing.T) {
 
 func TestMarketSellOrder(t *testing.T) {
 	t.Parallel()
-	_, err := b.MarketSellOrder(testCurrency, 0)
+	p := currency.NewPair(currency.BTC, currency.KRW)
+	_, err := b.MarketSellOrder(p, 0)
 	if err == nil {
 		t.Error("Bithumb MarketSellOrder() Expected error")
 	}
@@ -234,6 +237,13 @@ func TestUpdateTicker(t *testing.T) {
 
 	cp = currency.NewPair(currency.BTC, currency.KRW)
 	_, err = b.UpdateTicker(cp, asset.Spot)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateTickers(t *testing.T) {
+	err := b.UpdateTickers(asset.Spot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,49 +276,43 @@ func TestGetFeeByTypeOfflineTradeFee(t *testing.T) {
 func TestGetFee(t *testing.T) {
 	var feeBuilder = setFeeBuilder()
 	// CryptocurrencyTradeFee Basic
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0.0025) || err != nil {
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.0025), resp)
 	}
 
 	// CryptocurrencyTradeFee High quantity
 	feeBuilder = setFeeBuilder()
 	feeBuilder.Amount = 1000
 	feeBuilder.PurchasePrice = 1000
-	if resp, err := b.GetFee(feeBuilder); resp != float64(2500) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(2500), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
 	// CryptocurrencyTradeFee IsMaker
 	feeBuilder = setFeeBuilder()
 	feeBuilder.IsMaker = true
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0.0025) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.0025), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
 	// CryptocurrencyTradeFee Negative purchase price
 	feeBuilder = setFeeBuilder()
 	feeBuilder.PurchasePrice = -1000
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
 	// CryptocurrencyWithdrawalFee Basic
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.CryptocurrencyWithdrawalFee
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0.001) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.001), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
-	// CyptocurrencyDepositFee Basic
+	// CryptocurrencyDepositFee Basic
 	feeBuilder = setFeeBuilder()
-	feeBuilder.FeeType = exchange.CyptocurrencyDepositFee
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+	feeBuilder.FeeType = exchange.CryptocurrencyDepositFee
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
@@ -316,8 +320,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.InternationalBankDepositFee
 	feeBuilder.FiatCurrency = currency.HKD
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
@@ -325,8 +328,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.InternationalBankWithdrawalFee
 	feeBuilder.FiatCurrency = currency.HKD
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 }
@@ -620,5 +622,84 @@ func TestGetHistoricTrades(t *testing.T) {
 	_, err = b.GetHistoricTrades(currencyPair, asset.Spot, time.Now().Add(-time.Minute*15), time.Now())
 	if err != nil && err != common.ErrFunctionNotSupported {
 		t.Error(err)
+	}
+}
+
+func TestUpdateOrderExecutionLimits(t *testing.T) {
+	err := b.UpdateOrderExecutionLimits("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := currency.NewPair(currency.BTC, currency.KRW)
+	limit, err := b.GetOrderExecutionLimits(asset.Spot, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = limit.Conforms(46241000, 0.00001, order.Limit)
+	if !errors.Is(err, order.ErrAmountBelowMin) {
+		t.Fatalf("expected error %v but received %v",
+			order.ErrAmountBelowMin,
+			err)
+	}
+
+	err = limit.Conforms(46241000, 0.0001, order.Limit)
+	if !errors.Is(err, nil) {
+		t.Fatalf("expected error %v but received %v",
+			nil,
+			err)
+	}
+}
+
+func TestGetAmountMinimum(t *testing.T) {
+	testCases := []struct {
+		name      string
+		unitprice float64
+		expected  float64
+	}{
+		{
+			name:      "ETH-KRW",
+			unitprice: 2638000.0,
+			expected:  0.0002,
+		},
+		{
+			name:      "DOGE-KRW",
+			unitprice: 236.5,
+			expected:  2.1142,
+		},
+		{
+			name:      "XRP-KRW",
+			unitprice: 818.8,
+			expected:  0.6107,
+		},
+		{
+			name:      "LTC-KRW",
+			unitprice: 160100,
+			expected:  0.0032,
+		},
+		{
+			name:      "BTC-KRW",
+			unitprice: 46079000,
+			expected:  0.0001,
+		},
+		{
+			name:      "nonsense",
+			unitprice: 0,
+			expected:  0,
+		},
+	}
+
+	for i := range testCases {
+		tt := &testCases[i]
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			minAmount := getAmountMinimum(tt.unitprice)
+			if minAmount != tt.expected {
+				t.Fatalf("expected: %f but received: %f for unit price: %f",
+					tt.expected,
+					minAmount,
+					tt.unitprice)
+			}
+		})
 	}
 }

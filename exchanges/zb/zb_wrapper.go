@@ -243,16 +243,16 @@ func (z *ZB) UpdateTradablePairs(forceUpdate bool) error {
 	return z.UpdatePairs(p, asset.Spot, false, forceUpdate)
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (z *ZB) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (z *ZB) UpdateTickers(a asset.Item) error {
 	result, err := z.GetTickers()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	enabledPairs, err := z.GetEnabledPairs(assetType)
+	enabledPairs, err := z.GetEnabledPairs(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for x := range enabledPairs {
 		// We can't use either pair format here, so format it to lower-
@@ -271,13 +271,22 @@ func (z *ZB) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price,
 			Low:          result[curr].Low,
 			Volume:       result[curr].Volume,
 			ExchangeName: z.Name,
-			AssetType:    assetType})
+			AssetType:    a})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return ticker.GetTicker(z.Name, p, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (z *ZB) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := z.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(z.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -511,8 +520,8 @@ func (z *ZB) SubmitOrder(o *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (z *ZB) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (z *ZB) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -628,7 +637,6 @@ func (z *ZB) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (*wi
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	v, err := z.Withdraw(withdrawRequest.Currency.Lower().String(),
 		withdrawRequest.Crypto.Address,
 		withdrawRequest.TradePassword,
@@ -645,13 +653,13 @@ func (z *ZB) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (*wi
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (z *ZB) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (z *ZB) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (z *ZB) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (z *ZB) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
@@ -935,13 +943,8 @@ allKlines:
 }
 
 func (z *ZB) validateCandlesRequest(p currency.Pair, a asset.Item, start, end time.Time, interval kline.Interval) (kline.Item, error) {
-	if start.Equal(end) ||
-		end.After(time.Now()) ||
-		end.Before(start) ||
-		(start.IsZero() && !end.IsZero()) {
-		return kline.Item{}, fmt.Errorf("invalid time range supplied. Start: %v End %v",
-			start,
-			end)
+	if err := common.StartEndTimeCheck(start, end); err != nil {
+		return kline.Item{}, fmt.Errorf("invalid time range supplied. Start: %v End %v %w", start, end, err)
 	}
 	if err := z.ValidateKline(p, a, interval); err != nil {
 		return kline.Item{}, err

@@ -29,6 +29,7 @@ type IBotExchange interface {
 	ValidateCredentials(a asset.Item) error
 	FetchTicker(p currency.Pair, a asset.Item) (*ticker.Price, error)
 	UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error)
+	UpdateTickers(a asset.Item) error
 	FetchOrderbook(p currency.Pair, a asset.Item) (*orderbook.Base, error)
 	UpdateOrderbook(p currency.Pair, a asset.Item) (*orderbook.Base, error)
 	FetchTradablePairs(a asset.Item) ([]string, error)
@@ -39,7 +40,7 @@ type IBotExchange interface {
 	UpdateAccountInfo(a asset.Item) (account.Holdings, error)
 	GetAuthenticatedAPISupport(endpoint uint8) bool
 	SetPairs(pairs currency.Pairs, a asset.Item, enabled bool) error
-	GetAssetTypes() asset.Items
+	GetAssetTypes(enabled bool) asset.Items
 	GetRecentTrades(p currency.Pair, a asset.Item) ([]trade.Data, error)
 	GetHistoricTrades(p currency.Pair, a asset.Item, startTime, endTime time.Time) ([]trade.Data, error)
 	SupportsAutoPairUpdates() bool
@@ -51,7 +52,7 @@ type IBotExchange interface {
 	SupportsWithdrawPermissions(permissions uint32) bool
 	GetFundingHistory() ([]FundHistory, error)
 	SubmitOrder(s *order.Submit) (order.SubmitResponse, error)
-	ModifyOrder(action *order.Modify) (string, error)
+	ModifyOrder(action *order.Modify) (order.Modify, error)
 	CancelOrder(o *order.Cancel) error
 	CancelBatchOrders(o []order.Cancel) (order.CancelBatchResponse, error)
 	CancelAllOrders(orders *order.Cancel) (order.CancelAllResponse, error)
@@ -75,19 +76,16 @@ type IBotExchange interface {
 	GetHistoricCandlesExtended(p currency.Pair, a asset.Item, timeStart, timeEnd time.Time, interval kline.Interval) (kline.Item, error)
 	DisableRateLimiter() error
 	EnableRateLimiter() error
-	// Websocket specific wrapper functionality
-	// GetWebsocket returns a pointer to the websocket
+
 	GetWebsocket() (*stream.Websocket, error)
 	IsWebsocketEnabled() bool
 	SupportsWebsocket() bool
 	SubscribeToWebsocketChannels(channels []stream.ChannelSubscription) error
 	UnsubscribeToWebsocketChannels(channels []stream.ChannelSubscription) error
 	IsAssetWebsocketSupported(aType asset.Item) bool
-	// FlushWebsocketChannels checks and flushes subscriptions if there is a
-	// pair,asset, url/proxy or subscription change
 	FlushWebsocketChannels() error
 	AuthenticateWebsocket() error
-	// Exchange order related execution limits
+
 	GetOrderExecutionLimits(a asset.Item, cp currency.Pair) (*order.Limits, error)
 	CheckOrderExecutionLimits(a asset.Item, cp currency.Pair, price, amount float64, orderType order.Type) error
 	UpdateOrderExecutionLimits(a asset.Item) error

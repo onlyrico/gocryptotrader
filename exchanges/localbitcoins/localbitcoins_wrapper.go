@@ -165,16 +165,16 @@ func (l *LocalBitcoins) UpdateTradablePairs(forceUpdate bool) error {
 	return l.UpdatePairs(p, asset.Spot, false, forceUpdate)
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (l *LocalBitcoins) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (l *LocalBitcoins) UpdateTickers(a asset.Item) error {
 	tick, err := l.GetTicker()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	pairs, err := l.GetEnabledPairs(assetType)
+	pairs, err := l.GetEnabledPairs(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for i := range pairs {
 		curr := pairs[i].Quote.String()
@@ -186,15 +186,23 @@ func (l *LocalBitcoins) UpdateTicker(p currency.Pair, assetType asset.Item) (*ti
 		tp.Last = tick[curr].Avg24h
 		tp.Volume = tick[curr].VolumeBTC
 		tp.ExchangeName = l.Name
-		tp.AssetType = assetType
+		tp.AssetType = a
 
 		err = ticker.ProcessTicker(&tp)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
+	return nil
+}
 
-	return ticker.GetTicker(l.Name, p, assetType)
+// UpdateTicker updates and returns the ticker for a currency pair
+func (l *LocalBitcoins) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := l.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(l.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -414,8 +422,8 @@ func (l *LocalBitcoins) SubmitOrder(s *order.Submit) (order.SubmitResponse, erro
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (l *LocalBitcoins) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (l *LocalBitcoins) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -474,7 +482,6 @@ func (l *LocalBitcoins) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Re
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	err := l.WalletSend(withdrawRequest.Crypto.Address,
 		withdrawRequest.Amount,
 		withdrawRequest.PIN)
@@ -486,13 +493,13 @@ func (l *LocalBitcoins) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Re
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (l *LocalBitcoins) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (l *LocalBitcoins) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (l *LocalBitcoins) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (l *LocalBitcoins) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 

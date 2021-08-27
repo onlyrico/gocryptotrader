@@ -495,6 +495,14 @@ func TestUpdateTicker(t *testing.T) {
 	}
 }
 
+func TestUpdateTickers(t *testing.T) {
+	t.Parallel()
+	err := b.UpdateTickers(asset.Spot)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestGetActiveOrders(t *testing.T) {
 	t.Parallel()
 	if !areTestAPIKeysSet() {
@@ -737,7 +745,7 @@ func TestBTCMarkets_GetHistoricCandles(t *testing.T) {
 }
 
 func TestBTCMarkets_GetHistoricCandlesExtended(t *testing.T) {
-	start := time.Now().AddDate(0, 0, -1001)
+	start := time.Now().AddDate(0, 0, -2)
 	end := time.Now()
 	p, err := currency.NewPairFromString(BTCAUD)
 	if err != nil {

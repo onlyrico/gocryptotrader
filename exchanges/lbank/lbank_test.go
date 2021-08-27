@@ -427,7 +427,7 @@ func TestGetHistoricCandles(t *testing.T) {
 func TestGetHistoricCandlesExtended(t *testing.T) {
 	t.Parallel()
 
-	startTime := time.Now().Add(-time.Hour)
+	startTime := time.Now().Add(-time.Minute * 2)
 	end := time.Now()
 	pair, err := currency.NewPairFromString("eth_btc")
 	if err != nil {
@@ -509,6 +509,26 @@ func TestGetHistoricTrades(t *testing.T) {
 	}
 	// longer term
 	_, err = l.GetHistoricTrades(currencyPair, asset.Spot, time.Now().Add(-time.Minute*60*200), time.Now().Add(-time.Minute*60*199))
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestUpdateTicker(t *testing.T) {
+	t.Parallel()
+	cp, err := currency.NewPairFromString("eth_btc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = l.UpdateTicker(cp, asset.Spot)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestUpdateTickers(t *testing.T) {
+	t.Parallel()
+	err := l.UpdateTickers(asset.Spot)
 	if err != nil {
 		t.Error(err)
 	}

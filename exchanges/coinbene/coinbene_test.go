@@ -244,6 +244,21 @@ func TestUpdateTicker(t *testing.T) {
 	}
 }
 
+func TestUpdateTickers(t *testing.T) {
+	// TODO: fix Coinbene rate limiting that will allow to uncomment the next line
+	// and enable parallel testing
+	// t.Parallel()
+	err := c.UpdateTickers(asset.Spot)
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = c.UpdateTickers(asset.PerpetualSwap)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestGetAccountInfo(t *testing.T) {
 	t.Parallel()
 	if !areTestAPIKeysSet() {
@@ -653,7 +668,7 @@ func TestGetHistoricCandlesExtended(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startTime := time.Now().Add(-time.Hour * 24)
+	startTime := time.Now().Add(-time.Hour * 2)
 	_, err = c.GetHistoricCandlesExtended(currencyPair, asset.Spot, startTime, time.Now(), kline.OneHour)
 	if err != nil {
 		t.Fatal(err)

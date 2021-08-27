@@ -2,7 +2,6 @@ package exchange
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -30,12 +29,7 @@ func (e Exchange) Exchanges(enabledOnly bool) []string {
 
 // GetExchange returns IBotExchange for exchange or error if exchange is not found
 func (e Exchange) GetExchange(exch string) (exchange.IBotExchange, error) {
-	ex := engine.Bot.GetExchangeByName(exch)
-	if ex == nil {
-		return nil, fmt.Errorf("%v exchange not found", exch)
-	}
-
-	return ex, nil
+	return engine.Bot.GetExchangeByName(exch)
 }
 
 // IsEnabled returns if requested exchange is enabled or disabled
@@ -145,7 +139,7 @@ func (e Exchange) DepositAddress(exch string, currencyCode currency.Code) (out s
 		err = errors.New("currency code is empty")
 		return
 	}
-	return engine.Bot.DepositAddressManager.GetDepositAddressByExchange(exch, currencyCode)
+	return engine.Bot.DepositAddressManager.GetDepositAddressByExchangeAndCurrency(exch, currencyCode)
 }
 
 // WithdrawalFiatFunds withdraw funds from exchange to requested fiat source
@@ -163,7 +157,7 @@ func (e Exchange) WithdrawalFiatFunds(bankAccountID string, request *withdraw.Re
 		}
 	}
 
-	otp, err := engine.Bot.GetExchangeoOTPByName(request.Exchange)
+	otp, err := engine.Bot.GetExchangeOTPByName(request.Exchange)
 	if err == nil {
 		otpValue, errParse := strconv.ParseInt(otp, 10, 64)
 		if errParse != nil {
@@ -182,7 +176,7 @@ func (e Exchange) WithdrawalFiatFunds(bankAccountID string, request *withdraw.Re
 	request.Fiat.Bank.SWIFTCode = v.SWIFTCode
 	request.Fiat.Bank.IBAN = v.IBAN
 
-	resp, err := engine.Bot.SubmitWithdrawal(request)
+	resp, err := engine.Bot.WithdrawManager.SubmitWithdrawal(request)
 	if err != nil {
 		return "", err
 	}
@@ -196,7 +190,7 @@ func (e Exchange) WithdrawalCryptoFunds(request *withdraw.Request) (string, erro
 	if err != nil {
 		return "", err
 	}
-	otp, err := engine.Bot.GetExchangeoOTPByName(request.Exchange)
+	otp, err := engine.Bot.GetExchangeOTPByName(request.Exchange)
 	if err == nil {
 		v, errParse := strconv.ParseInt(otp, 10, 64)
 		if errParse != nil {
@@ -205,7 +199,7 @@ func (e Exchange) WithdrawalCryptoFunds(request *withdraw.Request) (string, erro
 		request.OneTimePassword = v
 	}
 
-	resp, err := engine.Bot.SubmitWithdrawal(request)
+	resp, err := engine.Bot.WithdrawManager.SubmitWithdrawal(request)
 	if err != nil {
 		return "", err
 	}

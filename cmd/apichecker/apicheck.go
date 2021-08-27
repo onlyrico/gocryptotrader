@@ -46,7 +46,6 @@ const (
 	pathBitstamp         = "https://www.bitstamp.net/api/"
 	pathHitBTC           = "https://api.hitbtc.com/"
 	pathBitflyer         = "https://lightning.bitflyer.com/docs?lang=en"
-	pathLakeBTC          = "https://www.lakebtc.com/s/api_v2"
 	pathKraken           = "https://www.kraken.com/features/api"
 	pathAlphaPoint       = "https://alphapoint.github.io/slate/#introduction"
 	pathYobit            = "https://www.yobit.net/en/api/"
@@ -478,8 +477,6 @@ func checkChangeLog(htmlData *HTMLScrapingData) (string, error) {
 		dataStrings, err = htmlScrapeHitBTC(htmlData)
 	case pathBitflyer:
 		dataStrings, err = htmlScrapeBitflyer(htmlData)
-	case pathLakeBTC:
-		dataStrings, err = htmlScrapeLakeBTC(htmlData)
 	case pathKraken:
 		dataStrings, err = htmlScrapeKraken(htmlData)
 	case pathAlphaPoint:
@@ -990,28 +987,6 @@ loop:
 	return resp, nil
 }
 
-// htmlScrapeLakeBTC gets the check string for LakeBTC Exchange
-func htmlScrapeLakeBTC(htmlData *HTMLScrapingData) ([]string, error) {
-	temp, err := http.Get(htmlData.Path)
-	if err != nil {
-		return nil, err
-	}
-	defer temp.Body.Close()
-	a, err := ioutil.ReadAll(temp.Body)
-	if err != nil {
-		return nil, err
-	}
-	r, err := regexp.Compile(htmlData.RegExp)
-	if err != nil {
-		return nil, err
-	}
-	str := r.FindString(string(a))
-	sha := crypto.GetSHA256([]byte(str))
-	var resp []string
-	resp = append(resp, crypto.HexEncodeToString(sha))
-	return resp, nil
-}
-
 // htmlScrapeBitstamp gets the check string for Bitstamp Exchange
 func htmlScrapeBitstamp(htmlData *HTMLScrapingData) ([]string, error) {
 	temp, err := http.Get(htmlData.Path)
@@ -1304,11 +1279,14 @@ func sendGetReq(path string, result interface{}) error {
 			common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout),
 			request.WithLimiter(request.NewBasicRateLimit(time.Second, 100)))
 	}
-	return requester.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:  http.MethodGet,
 		Path:    path,
 		Result:  result,
-		Verbose: verbose})
+		Verbose: verbose}
+	return requester.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
+	})
 }
 
 // sendAuthReq sends auth req
@@ -1316,11 +1294,14 @@ func sendAuthReq(method, path string, result interface{}) error {
 	requester := request.New("Apichecker",
 		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout),
 		request.WithLimiter(request.NewBasicRateLimit(time.Second*10, 100)))
-	return requester.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:  method,
 		Path:    path,
 		Result:  result,
-		Verbose: verbose})
+		Verbose: verbose}
+	return requester.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
+	})
 }
 
 // trelloGetBoardID gets all board ids on trello for a given user

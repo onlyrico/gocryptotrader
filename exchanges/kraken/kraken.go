@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/common/crypto"
@@ -958,21 +957,25 @@ func (k *Kraken) SendHTTPRequest(ep exchange.URL, path string, result interface{
 	if err != nil {
 		return err
 	}
-	return k.SendPayload(context.Background(), &request.Item{
+
+	item := &request.Item{
 		Method:        http.MethodGet,
 		Path:          endpoint + path,
 		Result:        result,
 		Verbose:       k.Verbose,
 		HTTPDebugging: k.HTTPDebugging,
 		HTTPRecording: k.HTTPRecording,
+	}
+
+	return k.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
 	})
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request
 func (k *Kraken) SendAuthenticatedHTTPRequest(ep exchange.URL, method string, params url.Values, result interface{}) error {
 	if !k.AllowAuthenticatedRequest() {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet,
-			k.Name)
+		return fmt.Errorf("%s %w", k.Name, exchange.ErrAuthenticatedRequestWithoutCredentialsSet)
 	}
 	endpoint, err := k.API.Endpoints.GetURL(ep)
 	if err != nil {
@@ -980,43 +983,38 @@ func (k *Kraken) SendAuthenticatedHTTPRequest(ep exchange.URL, method string, pa
 	}
 	path := fmt.Sprintf("/%s/private/%s", krakenAPIVersion, method)
 
-	params.Set("nonce", k.Requester.GetNonce(true).String())
-	encoded := params.Encode()
-	shasum := crypto.GetSHA256([]byte(params.Get("nonce") + encoded))
-	signature := crypto.Base64Encode(crypto.GetHMAC(crypto.HashSHA512,
-		append([]byte(path), shasum...), []byte(k.API.Credentials.Secret)))
-
-	if k.Verbose {
-		log.Debugf(log.ExchangeSys, "Sending POST request to %s, path: %s, params: %s",
-			endpoint,
-			path,
-			encoded)
-	}
-
-	headers := make(map[string]string)
-	headers["API-Key"] = k.API.Credentials.Key
-	headers["API-Sign"] = signature
-
 	interim := json.RawMessage{}
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
-	defer cancel()
-	err = k.SendPayload(ctx, &request.Item{
-		Method:        http.MethodPost,
-		Path:          endpoint + path,
-		Headers:       headers,
-		Body:          strings.NewReader(encoded),
-		Result:        &interim,
-		AuthRequest:   true,
-		NonceEnabled:  true,
-		Verbose:       k.Verbose,
-		HTTPDebugging: k.HTTPDebugging,
-		HTTPRecording: k.HTTPRecording,
+	err = k.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		nonce := k.Requester.GetNonce(true).String()
+		params.Set("nonce", nonce)
+		encoded := params.Encode()
+		shasum := crypto.GetSHA256([]byte(nonce + encoded))
+		signature := crypto.Base64Encode(crypto.GetHMAC(crypto.HashSHA512,
+			append([]byte(path), shasum...),
+			[]byte(k.API.Credentials.Secret)))
+
+		headers := make(map[string]string)
+		headers["API-Key"] = k.API.Credentials.Key
+		headers["API-Sign"] = signature
+
+		return &request.Item{
+			Method:        http.MethodPost,
+			Path:          endpoint + path,
+			Headers:       headers,
+			Body:          strings.NewReader(encoded),
+			Result:        &interim,
+			AuthRequest:   true,
+			NonceEnabled:  true,
+			Verbose:       k.Verbose,
+			HTTPDebugging: k.HTTPDebugging,
+			HTTPRecording: k.HTTPRecording,
+		}, nil
 	})
 	if err != nil {
 		return err
 	}
 	var errCap SpotAuthError
-	if err := json.Unmarshal(interim, &errCap); err == nil {
+	if err = json.Unmarshal(interim, &errCap); err == nil {
 		if len(errCap.Error) != 0 {
 			return errors.New(errCap.Error[0])
 		}
@@ -1060,7 +1058,7 @@ func (k *Kraken) GetFee(feeBuilder *exchange.FeeBuilder) (float64, error) {
 				}
 			}
 		}
-	case exchange.CyptocurrencyDepositFee:
+	case exchange.CryptocurrencyDepositFee:
 		fee = getCryptocurrencyDepositFee(feeBuilder.Pair.Base)
 
 	case exchange.InternationalBankWithdrawalFee:

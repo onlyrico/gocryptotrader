@@ -1,6 +1,6 @@
 # GoCryptoTrader package Trade
 
-<img src="https://github.com/thrasher-corp/gocryptotrader/blob/master/web/src/assets/page-logo.png?raw=true" width="350px" height="350px" hspace="70">
+<img src="/common/gctlogo.png?raw=true" width="350px" height="350px" hspace="70">
 
 
 [![Build Status](https://github.com/thrasher-corp/gocryptotrader/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/thrasher-corp/gocryptotrader/actions/workflows/tests.yml)
@@ -63,10 +63,10 @@ _b in this context is an `IBotExchange` implemented struct_
 | Binance| Yes  | Yes        | Yes  |
 | Bitfinex | Yes  | Yes        | Yes  |
 | Bitflyer | Yes  | No      | No  |
-| Bithumb | Yes  | NA       | No  |
+| Bithumb | Yes  | Yes       | No  |
 | BitMEX | Yes | Yes | Yes |
 | Bitstamp | Yes  | Yes       | No  |
-| Bittrex | Yes | No | No |
+| Bittrex | Yes | Yes | No |
 | BTCMarkets | Yes | Yes       | No  |
 | BTSE | Yes | Yes | No |
 | Coinbene | Yes | Yes | No |
@@ -80,7 +80,6 @@ _b in this context is an `IBotExchange` implemented struct_
 | Huobi.Pro | Yes | Yes | No |
 | ItBit | Yes | NA | No |
 | Kraken | Yes | Yes | No |
-| LakeBTC | Yes | No | No |
 | Lbank | Yes | No | Yes |
 | LocalBitcoins | Yes | NA | No |
 | OKCoin International | Yes | Yes | No |

@@ -122,8 +122,8 @@ func splitLevel(level string) (l Levels) {
 	return
 }
 
-func registerNewSubLogger(logger string) *subLogger {
-	temp := subLogger{
+func registerNewSubLogger(logger string) *SubLogger {
+	temp := SubLogger{
 		name:   strings.ToUpper(logger),
 		output: os.Stdout,
 	}
@@ -141,8 +141,10 @@ func init() {
 	ConnectionMgr = registerNewSubLogger("CONNECTION")
 	BackTester = registerNewSubLogger("BACKTESTER")
 	CommunicationMgr = registerNewSubLogger("COMMS")
+	APIServerMgr = registerNewSubLogger("API")
 	ConfigMgr = registerNewSubLogger("CONFIG")
 	DatabaseMgr = registerNewSubLogger("DATABASE")
+	DataHistory = registerNewSubLogger("DATAHISTORY")
 	OrderMgr = registerNewSubLogger("ORDER")
 	PortfolioMgr = registerNewSubLogger("PORTFOLIO")
 	SyncMgr = registerNewSubLogger("SYNC")

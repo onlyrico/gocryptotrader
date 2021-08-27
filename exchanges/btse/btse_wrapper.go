@@ -264,7 +264,7 @@ func (b *BTSE) FetchTradablePairs(a asset.Item) ([]string, error) {
 // UpdateTradablePairs updates the exchanges available pairs and stores
 // them in the exchanges config
 func (b *BTSE) UpdateTradablePairs(forceUpdate bool) error {
-	a := b.GetAssetTypes()
+	a := b.GetAssetTypes(false)
 	for i := range a {
 		pairs, err := b.FetchTradablePairs(a[i])
 		if err != nil {
@@ -284,17 +284,17 @@ func (b *BTSE) UpdateTradablePairs(forceUpdate bool) error {
 	return nil
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (b *BTSE) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	tickers, err := b.GetMarketSummary("", assetType == asset.Spot)
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (b *BTSE) UpdateTickers(a asset.Item) error {
+	tickers, err := b.GetMarketSummary("", a == asset.Spot)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for x := range tickers {
 		var pair currency.Pair
 		pair, err = currency.NewPairFromString(tickers[x].Symbol)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		err = ticker.ProcessTicker(&ticker.Price{
@@ -306,13 +306,22 @@ func (b *BTSE) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Pric
 			Volume:       tickers[x].Volume,
 			High:         tickers[x].High24Hr,
 			ExchangeName: b.Name,
-			AssetType:    assetType})
+			AssetType:    a})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return ticker.GetTicker(b.Name, p, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (b *BTSE) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := b.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(b.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -392,7 +401,7 @@ func (b *BTSE) UpdateAccountInfo(assetType asset.Item) (account.Holdings, error)
 			account.Balance{
 				CurrencyName: currency.NewCode(balance[b].Currency),
 				TotalValue:   balance[b].Total,
-				Hold:         balance[b].Available,
+				Hold:         balance[b].Total - balance[b].Available,
 			},
 		)
 	}
@@ -530,8 +539,8 @@ func (b *BTSE) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (b *BTSE) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (b *BTSE) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -699,7 +708,6 @@ func (b *BTSE) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (*
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	amountToString := strconv.FormatFloat(withdrawRequest.Amount, 'f', 8, 64)
 	resp, err := b.WalletWithdrawal(withdrawRequest.Currency.String(),
 		withdrawRequest.Crypto.Address,
@@ -716,13 +724,13 @@ func (b *BTSE) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (*
 
 // WithdrawFiatFunds returns a withdrawal ID when a withdrawal is
 // submitted
-func (b *BTSE) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (b *BTSE) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a withdrawal is
 // submitted
-func (b *BTSE) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (b *BTSE) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 

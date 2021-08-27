@@ -320,13 +320,16 @@ func (g *Gateio) SendHTTPRequest(ep exchange.URL, path string, result interface{
 	if err != nil {
 		return err
 	}
-	return g.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:        http.MethodGet,
 		Path:          endpoint + path,
 		Result:        result,
 		Verbose:       g.Verbose,
 		HTTPDebugging: g.HTTPDebugging,
 		HTTPRecording: g.HTTPRecording,
+	}
+	return g.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
 	})
 }
 
@@ -405,8 +408,7 @@ func (g *Gateio) GenerateSignature(message string) []byte {
 // To use this you must setup an APIKey and APISecret from the exchange
 func (g *Gateio) SendAuthenticatedHTTPRequest(ep exchange.URL, method, endpoint, param string, result interface{}) error {
 	if !g.AllowAuthenticatedRequest() {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet,
-			g.Name)
+		return fmt.Errorf("%s %w", g.Name, exchange.ErrAuthenticatedRequestWithoutCredentialsSet)
 	}
 	ePoint, err := g.API.Endpoints.GetURL(ep)
 	if err != nil {
@@ -422,16 +424,19 @@ func (g *Gateio) SendAuthenticatedHTTPRequest(ep exchange.URL, method, endpoint,
 	urlPath := fmt.Sprintf("%s/%s/%s", ePoint, gateioAPIVersion, endpoint)
 
 	var intermidiary json.RawMessage
-	err = g.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:        method,
 		Path:          urlPath,
 		Headers:       headers,
-		Body:          strings.NewReader(param),
 		Result:        &intermidiary,
 		AuthRequest:   true,
 		Verbose:       g.Verbose,
 		HTTPDebugging: g.HTTPDebugging,
 		HTTPRecording: g.HTTPRecording,
+	}
+	err = g.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		item.Body = strings.NewReader(param)
+		return item, nil
 	})
 	if err != nil {
 		return err

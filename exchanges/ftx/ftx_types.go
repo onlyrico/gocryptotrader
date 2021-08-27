@@ -1,7 +1,6 @@
 package ftx
 
 import (
-	"errors"
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
@@ -56,24 +55,27 @@ type LendingInfoData struct {
 
 // MarketData stores market data
 type MarketData struct {
-	Name           string  `json:"name"`
-	BaseCurrency   string  `json:"baseCurrency"`
-	QuoteCurrency  string  `json:"quoteCurrency"`
-	MarketType     string  `json:"type"`
-	Underlying     string  `json:"underlying"`
-	Change1h       float64 `json:"change1h"`
-	Change24h      float64 `json:"change24h"`
-	ChangeBod      float64 `json:"changeBod"`
-	QuoteVolume24h float64 `json:"quoteVolume24h"`
-	Enabled        bool    `json:"enabled"`
-	Ask            float64 `json:"ask"`
-	Bid            float64 `json:"bid"`
-	Last           float64 `json:"last"`
-	USDVolume24h   float64 `json:"volumeUSD24h"`
-	MinProvideSize float64 `json:"minProvideSize"`
-	PriceIncrement float64 `json:"priceIncrement"`
-	SizeIncrement  float64 `json:"sizeIncrement"`
-	Restricted     bool    `json:"restricted"`
+	Name                  string  `json:"name"`
+	BaseCurrency          string  `json:"baseCurrency"`
+	QuoteCurrency         string  `json:"quoteCurrency"`
+	MarketType            string  `json:"type"`
+	Underlying            string  `json:"underlying"`
+	Change1h              float64 `json:"change1h"`
+	Change24h             float64 `json:"change24h"`
+	ChangeBod             float64 `json:"changeBod"`
+	QuoteVolume24h        float64 `json:"quoteVolume24h"`
+	Enabled               bool    `json:"enabled"`
+	Ask                   float64 `json:"ask"`
+	Bid                   float64 `json:"bid"`
+	Last                  float64 `json:"last"`
+	USDVolume24h          float64 `json:"volumeUSD24h"`
+	MinProvideSize        float64 `json:"minProvideSize"`
+	PriceIncrement        float64 `json:"priceIncrement"`
+	SizeIncrement         float64 `json:"sizeIncrement"`
+	Restricted            bool    `json:"restricted"`
+	PostOnly              bool    `json:"postOnly"`
+	Price                 float64 `json:"price"`
+	HighLeverageFeeExempt bool    `json:"highLeverageFeeExempt"`
 }
 
 // OData stores orderdata in orderbook
@@ -182,11 +184,13 @@ type PositionData struct {
 	MaintenanceMarginRequirement float64 `json:"maintenanceMarginRequirement"`
 	NetSize                      float64 `json:"netSize"`
 	OpenSize                     float64 `json:"openSize"`
-	RealisedPnL                  float64 `json:"realisedPnL"`
-	ShortOrderSide               float64 `json:"shortOrderSide"`
+	RealizedPnL                  float64 `json:"realizedPnL"`
+	ShortOrderSize               float64 `json:"shortOrderSize"`
 	Side                         string  `json:"side"`
 	Size                         float64 `json:"size"`
-	UnrealisedPnL                float64 `json:"unrealisedPnL"`
+	UnrealizedPnL                float64 `json:"unrealizedPnL"`
+	CollateralUsed               float64 `json:"collateralUsed"`
+	EstimatedLiquidationPrice    float64 `json:"estimatedLiquidationPrice"`
 }
 
 // AccountInfoData stores account data
@@ -196,7 +200,7 @@ type AccountInfoData struct {
 	Collateral                   float64        `json:"collateral"`
 	FreeCollateral               float64        `json:"freeCollateral"`
 	InitialMarginRequirement     float64        `json:"initialMarginRequirement"`
-	Leverage                     float64        `json:"float64"`
+	Leverage                     float64        `json:"leverage"`
 	Liquidating                  bool           `json:"liquidating"`
 	MaintenanceMarginRequirement float64        `json:"maintenanceMarginRequirement"`
 	MakerFee                     float64        `json:"makerFee"`
@@ -378,11 +382,11 @@ type LTBalanceData struct {
 
 // LTCreationData stores token creation requests' data
 type LTCreationData struct {
-	ID            string    `json:"id"`
+	ID            int64     `json:"id"`
 	Token         string    `json:"token"`
 	RequestedSize float64   `json:"requestedSize"`
 	Pending       bool      `json:"pending"`
-	CreatedSize   float64   `json:"createdize"`
+	CreatedSize   float64   `json:"createdSize"`
 	Price         float64   `json:"price"`
 	Cost          float64   `json:"cost"`
 	Fee           float64   `json:"fee"`
@@ -392,7 +396,7 @@ type LTCreationData struct {
 
 // RequestTokenCreationData stores data of the token creation requested
 type RequestTokenCreationData struct {
-	ID            string    `json:"id"`
+	ID            int64     `json:"id"`
 	Token         string    `json:"token"`
 	RequestedSize float64   `json:"requestedSize"`
 	Cost          float64   `json:"cost"`
@@ -415,7 +419,7 @@ type LTRedemptionData struct {
 
 // LTRedemptionRequestData stores redemption request data for a leveraged token
 type LTRedemptionRequestData struct {
-	ID                string    `json:"id"`
+	ID                int64     `json:"id"`
 	Token             string    `json:"token"`
 	Size              float64   `json:"size"`
 	ProjectedProceeds float64   `json:"projectedProceeds"`
@@ -599,37 +603,42 @@ type WsOrderbookData struct {
 
 // WsOrders stores ws orders' data
 type WsOrders struct {
-	ID            int64   `json:"id"`
-	ClientID      string  `json:"clientId"`
-	Market        string  `json:"market"`
-	OrderType     string  `json:"type"`
-	Side          string  `json:"side"`
-	Size          float64 `json:"size"`
-	Price         float64 `json:"price"`
-	ReduceOnly    bool    `json:"reduceOnly"`
-	IOC           bool    `json:"ioc"`
-	PostOnly      bool    `json:"postOnly"`
-	Status        string  `json:"status"`
-	FilledSize    float64 `json:"filedSize"`
-	RemainingSize float64 `json:"remainingSize"`
-	AvgFillPrice  float64 `json:"avgFillPrice"`
+	ID            int64     `json:"id"`
+	ClientID      string    `json:"clientId"`
+	Market        string    `json:"market"`
+	OrderType     string    `json:"type"`
+	Side          string    `json:"side"`
+	Price         float64   `json:"price"`
+	Size          float64   `json:"size"`
+	Status        string    `json:"status"`
+	FilledSize    float64   `json:"filledSize"`
+	RemainingSize float64   `json:"remainingSize"`
+	ReduceOnly    bool      `json:"reduceOnly"`
+	Liquidation   bool      `json:"liquidation"`
+	AvgFillPrice  float64   `json:"avgFillPrice"`
+	PostOnly      bool      `json:"postOnly"`
+	IOC           bool      `json:"ioc"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 
 // WsFills stores websocket fills' data
 type WsFills struct {
-	Fee       float64   `json:"fee"`
-	FeeRate   float64   `json:"feeRate"`
-	Future    string    `json:"future"`
-	ID        int64     `json:"id"`
-	Liquidity string    `json:"liquidity"`
-	Market    string    `json:"market"`
-	OrderID   int64     `json:"orderId"`
-	TradeID   int64     `json:"tradeId"`
-	Price     float64   `json:"price"`
-	Side      string    `json:"side"`
-	Size      float64   `json:"size"`
-	Time      time.Time `json:"time"`
-	OrderType string    `json:"orderType"`
+	ID            int64     `json:"id"`
+	Market        string    `json:"market"`
+	Future        string    `json:"future"`
+	BaseCurrency  string    `json:"baseCurrency"`
+	QuoteCurrency string    `json:"quoteCurrency"`
+	Type          string    `json:"type"`
+	Side          string    `json:"side"`
+	Price         float64   `json:"price"`
+	Size          float64   `json:"size"`
+	OrderID       int64     `json:"orderId"`
+	Time          time.Time `json:"time"`
+	TradeID       int64     `json:"tradeId"`
+	FeeRate       float64   `json:"feeRate"`
+	Fee           float64   `json:"fee"`
+	FeeCurrency   string    `json:"feeCurrency"`
+	Liquidity     string    `json:"liquidity"`
 }
 
 // WsSub has the data used to subscribe to a channel
@@ -674,7 +683,7 @@ type WsOrderDataStore struct {
 type WsFillsDataStore struct {
 	Channel     string  `json:"channel"`
 	MessageType string  `json:"type"`
-	FillsData   WsFills `json:"fills"`
+	FillsData   WsFills `json:"data"`
 }
 
 // TimeInterval represents interval enum.
@@ -690,8 +699,6 @@ var (
 	TimeIntervalFourHours      = TimeInterval("14400")
 	TimeIntervalDay            = TimeInterval("86400")
 )
-
-var errInvalidInterval = errors.New("invalid interval")
 
 // OrderVars stores side, status and type for any order/trade
 type OrderVars struct {
@@ -781,6 +788,16 @@ type Subaccount struct {
 	Competition bool   `json:"competition"`
 }
 
+// SubaccountTransferStatus stores the subaccount transfer details
+type SubaccountTransferStatus struct {
+	ID     int64     `json:"id"`
+	Coin   string    `json:"coin"`
+	Size   float64   `json:"size"`
+	Time   time.Time `json:"time"`
+	Notes  string    `json:"notes"`
+	Status string    `json:"status"`
+}
+
 // SubaccountBalance stores the user's subaccount balance
 type SubaccountBalance struct {
 	Coin                   string  `json:"coin"`
@@ -790,12 +807,37 @@ type SubaccountBalance struct {
 	AvailableWithoutBorrow float64 `json:"availableWithoutBorrow"`
 }
 
-// SubaccountTransferStatus stores the subaccount transfer details
-type SubaccountTransferStatus struct {
-	ID     int64     `json:"id"`
+// Stake stores an individual coin stake
+type Stake struct {
+	Coin      string    `json:"coin"`
+	CreatedAt time.Time `json:"createdAt"`
+	ID        int64     `json:"id"`
+	Size      float64   `json:"size"`
+}
+
+// UnstakeRequest stores data for an unstake request
+type UnstakeRequest struct {
+	Stake
+	Status       string    `json:"status"`
+	UnlockAt     time.Time `json:"unlockAt"`
+	FractionToGo float64   `json:"fractionToGo"`
+	Fee          float64   `json:"fee"`
+}
+
+// StakeBalance stores an individual coin stake balance
+type StakeBalance struct {
+	Coin               string  `json:"coin"`
+	LifetimeRewards    float64 `json:"lifetimeRewards"`
+	ScheduledToUnstake float64 `json:"scheduledToUnstake"`
+	Staked             float64 `json:"staked"`
+}
+
+// StakeReward stores an individual staking reward
+type StakeReward struct {
 	Coin   string    `json:"coin"`
+	ID     int64     `json:"id"`
 	Size   float64   `json:"size"`
-	Time   time.Time `json:"time"`
 	Notes  string    `json:"notes"`
 	Status string    `json:"status"`
+	Time   time.Time `json:"time"`
 }

@@ -66,7 +66,7 @@ func (b *Bitfinex) SetDefaults() {
 	}
 
 	fmt2 := currency.PairStore{
-		RequestFormat: &currency.PairFormat{Uppercase: true},
+		RequestFormat: &currency.PairFormat{Uppercase: true, Delimiter: ":"},
 		ConfigFormat:  &currency.PairFormat{Uppercase: true, Delimiter: ":"},
 	}
 
@@ -303,7 +303,7 @@ func (b *Bitfinex) FetchTradablePairs(a asset.Item) ([]string, error) {
 // UpdateTradablePairs updates the exchanges available pairs and stores
 // them in the exchanges config
 func (b *Bitfinex) UpdateTradablePairs(forceUpdate bool) error {
-	assets := b.CurrencyPairs.GetAssetTypes()
+	assets := b.CurrencyPairs.GetAssetTypes(false)
 	for i := range assets {
 		pairs, err := b.FetchTradablePairs(assets[i])
 		if err != nil {
@@ -323,22 +323,22 @@ func (b *Bitfinex) UpdateTradablePairs(forceUpdate bool) error {
 	return nil
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (b *Bitfinex) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	enabledPairs, err := b.GetEnabledPairs(assetType)
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (b *Bitfinex) UpdateTickers(a asset.Item) error {
+	enabledPairs, err := b.GetEnabledPairs(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	tickerNew, err := b.GetTickerBatch()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	for k, v := range tickerNew {
 		pair, err := currency.NewPairFromString(k[1:]) // Remove prefix
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		if !enabledPairs.Contains(pair, true) {
@@ -353,18 +353,27 @@ func (b *Bitfinex) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.
 			Ask:          v.Ask,
 			Volume:       v.Volume,
 			Pair:         pair,
-			AssetType:    assetType,
+			AssetType:    a,
 			ExchangeName: b.Name})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return ticker.GetTicker(b.Name, p, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (b *Bitfinex) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := b.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(b.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
-func (b *Bitfinex) FetchTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	fPair, err := b.FormatExchangeCurrency(p, assetType)
+func (b *Bitfinex) FetchTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	fPair, err := b.FormatExchangeCurrency(p, a)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +381,7 @@ func (b *Bitfinex) FetchTicker(p currency.Pair, assetType asset.Item) (*ticker.P
 	b.appendOptionalDelimiter(&fPair)
 	tick, err := ticker.GetTicker(b.Name, fPair, asset.Spot)
 	if err != nil {
-		return b.UpdateTicker(fPair, assetType)
+		return b.UpdateTicker(fPair, a)
 	}
 	return tick, nil
 }
@@ -524,7 +533,7 @@ func (b *Bitfinex) GetWithdrawalsHistory(c currency.Code) (resp []exchange.Withd
 
 // GetRecentTrades returns the most recent trades for a currency and asset
 func (b *Bitfinex) GetRecentTrades(p currency.Pair, assetType asset.Item) ([]trade.Data, error) {
-	return b.GetHistoricTrades(p, assetType, time.Now().Add(-time.Hour), time.Now())
+	return b.GetHistoricTrades(p, assetType, time.Now().Add(-time.Minute*15), time.Now())
 }
 
 // GetHistoricTrades returns historic trade data within the timeframe provided
@@ -532,8 +541,8 @@ func (b *Bitfinex) GetHistoricTrades(p currency.Pair, assetType asset.Item, time
 	if assetType == asset.MarginFunding {
 		return nil, fmt.Errorf("asset type '%v' not supported", assetType)
 	}
-	if timestampStart.Equal(timestampEnd) || timestampEnd.After(time.Now()) || timestampEnd.Before(timestampStart) {
-		return nil, fmt.Errorf("invalid time range supplied. Start: %v End %v", timestampStart, timestampEnd)
+	if err := common.StartEndTimeCheck(timestampStart, timestampEnd); err != nil {
+		return nil, fmt.Errorf("invalid time range supplied. Start: %v End %v %w", timestampStart, timestampEnd, err)
 	}
 	var err error
 	p, err = b.FormatExchangeCurrency(p, assetType)
@@ -647,27 +656,36 @@ func (b *Bitfinex) SubmitOrder(o *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (b *Bitfinex) ModifyOrder(action *order.Modify) (string, error) {
+func (b *Bitfinex) ModifyOrder(action *order.Modify) (order.Modify, error) {
 	if err := action.Validate(); err != nil {
-		return "", err
+		return order.Modify{}, err
 	}
 
 	orderIDInt, err := strconv.ParseInt(action.ID, 10, 64)
 	if err != nil {
-		return action.ID, err
+		return order.Modify{ID: action.ID}, err
 	}
 	if b.Websocket.CanUseAuthenticatedWebsocketForWrapper() {
-		if action.Side == order.Sell && action.Amount > 0 {
-			action.Amount = -1 * action.Amount
-		}
-		err = b.WsModifyOrder(&WsUpdateOrderRequest{
+		request := WsUpdateOrderRequest{
 			OrderID: orderIDInt,
 			Price:   action.Price,
 			Amount:  action.Amount,
-		})
-		return action.ID, err
+		}
+		if action.Side == order.Sell && action.Amount > 0 {
+			request.Amount *= -1
+		}
+		err = b.WsModifyOrder(&request)
+		return order.Modify{
+			Exchange:  action.Exchange,
+			AssetType: action.AssetType,
+			Pair:      action.Pair,
+			ID:        action.ID,
+
+			Price:  action.Price,
+			Amount: action.Amount,
+		}, err
 	}
-	return "", common.ErrNotYetImplemented
+	return order.Modify{}, common.ErrNotYetImplemented
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -730,7 +748,6 @@ func (b *Bitfinex) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	// Bitfinex has support for three types, exchange, margin and deposit
 	// As this is for trading, I've made the wrapper default 'exchange'
 	// TODO: Discover an automated way to make the decision for wallet type to withdraw from
@@ -756,7 +773,6 @@ func (b *Bitfinex) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdr
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	withdrawalType := "wire"
 	// Bitfinex has support for three types, exchange, margin and deposit
 	// As this is for trading, I've made the wrapper default 'exchange'
@@ -779,7 +795,6 @@ func (b *Bitfinex) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdra
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	v, err := b.WithdrawFiatFunds(withdrawRequest)
 	if err != nil {
 		return nil, err
@@ -1028,7 +1043,10 @@ func (b *Bitfinex) GetHistoricCandlesExtended(pair currency.Pair, a asset.Item, 
 		Interval: interval,
 	}
 
-	dates := kline.CalculateCandleDateRanges(start, end, interval, b.Features.Enabled.Kline.ResultLimit)
+	dates, err := kline.CalculateCandleDateRanges(start, end, interval, b.Features.Enabled.Kline.ResultLimit)
+	if err != nil {
+		return kline.Item{}, err
+	}
 	cf, err := b.fixCasing(pair, a)
 	if err != nil {
 		return kline.Item{}, err
@@ -1054,9 +1072,10 @@ func (b *Bitfinex) GetHistoricCandlesExtended(pair currency.Pair, a asset.Item, 
 			})
 		}
 	}
-	err = dates.VerifyResultsHaveData(ret.Candles)
-	if err != nil {
-		log.Warnf(log.ExchangeSys, "%s - %s", b.Name, err)
+	dates.SetHasDataFromCandles(ret.Candles)
+	summary := dates.DataSummary(false)
+	if len(summary) > 0 {
+		log.Warnf(log.ExchangeSys, "%v - %v", b.Name, summary)
 	}
 	ret.RemoveDuplicates()
 	ret.RemoveOutsideRange(start, end)
@@ -1066,10 +1085,10 @@ func (b *Bitfinex) GetHistoricCandlesExtended(pair currency.Pair, a asset.Item, 
 
 func (b *Bitfinex) fixCasing(in currency.Pair, a asset.Item) (string, error) {
 	var checkString [2]byte
-	if a == asset.Spot {
+	if a == asset.Spot || a == asset.Margin {
 		checkString[0] = 't'
 		checkString[1] = 'T'
-	} else if a == asset.Margin {
+	} else if a == asset.MarginFunding {
 		checkString[0] = 'f'
 		checkString[1] = 'F'
 	}

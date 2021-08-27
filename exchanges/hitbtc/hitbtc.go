@@ -525,22 +525,25 @@ func (h *HitBTC) SendHTTPRequest(ep exchange.URL, path string, result interface{
 	if err != nil {
 		return err
 	}
-	return h.SendPayload(context.Background(), &request.Item{
+
+	item := &request.Item{
 		Method:        http.MethodGet,
 		Path:          endpoint + path,
 		Result:        result,
 		Verbose:       h.Verbose,
 		HTTPDebugging: h.HTTPDebugging,
 		HTTPRecording: h.HTTPRecording,
-		Endpoint:      marketRequests,
+	}
+
+	return h.SendPayload(context.Background(), marketRequests, func() (*request.Item, error) {
+		return item, nil
 	})
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated http request
 func (h *HitBTC) SendAuthenticatedHTTPRequest(ep exchange.URL, method, endpoint string, values url.Values, f request.EndpointLimit, result interface{}) error {
 	if !h.AllowAuthenticatedRequest() {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet,
-			h.Name)
+		return fmt.Errorf("%s %w", h.Name, exchange.ErrAuthenticatedRequestWithoutCredentialsSet)
 	}
 	ePoint, err := h.API.Endpoints.GetURL(ep)
 	if err != nil {
@@ -551,17 +554,20 @@ func (h *HitBTC) SendAuthenticatedHTTPRequest(ep exchange.URL, method, endpoint 
 
 	path := fmt.Sprintf("%s/%s", ePoint, endpoint)
 
-	return h.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:        method,
 		Path:          path,
 		Headers:       headers,
-		Body:          bytes.NewBufferString(values.Encode()),
 		Result:        result,
 		AuthRequest:   true,
 		Verbose:       h.Verbose,
 		HTTPDebugging: h.HTTPDebugging,
 		HTTPRecording: h.HTTPRecording,
-		Endpoint:      f,
+	}
+
+	return h.SendPayload(context.Background(), f, func() (*request.Item, error) {
+		item.Body = bytes.NewBufferString(values.Encode())
+		return item, nil
 	})
 }
 
@@ -589,7 +595,7 @@ func (h *HitBTC) GetFee(feeBuilder *exchange.FeeBuilder) (float64, error) {
 		if err != nil {
 			return 0, err
 		}
-	case exchange.CyptocurrencyDepositFee:
+	case exchange.CryptocurrencyDepositFee:
 		fee = calculateCryptocurrencyDepositFee(feeBuilder.Pair.Base,
 			feeBuilder.Amount)
 	case exchange.OfflineTradeFee:

@@ -3,6 +3,9 @@ package binance
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +28,9 @@ const (
 
 var b Binance
 
+// this lock guards against orderbook tests race
+var binanceOrderBookLock = &sync.Mutex{}
+
 func areTestAPIKeysSet() bool {
 	return b.ValidateAPICredentials()
 }
@@ -35,6 +41,14 @@ func setFeeBuilder() *exchange.FeeBuilder {
 		FeeType:       exchange.CryptocurrencyTradeFee,
 		Pair:          currency.NewPair(currency.BTC, currency.LTC),
 		PurchasePrice: 1,
+	}
+}
+
+func TestUServerTime(t *testing.T) {
+	t.Parallel()
+	_, err := b.UServerTime()
+	if err != nil {
+		t.Error(err)
 	}
 }
 
@@ -83,6 +97,23 @@ func TestUpdateTicker(t *testing.T) {
 		t.Error(err)
 	}
 	_, err = b.UpdateTicker(ucp, asset.USDTMarginedFutures)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestUpdateTickers(t *testing.T) {
+	err := b.UpdateTickers(asset.Spot)
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = b.UpdateTickers(asset.CoinMarginedFutures)
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = b.UpdateTickers(asset.USDTMarginedFutures)
 	if err != nil {
 		t.Error(err)
 	}
@@ -1174,12 +1205,9 @@ func TestGetMostRecentTrades(t *testing.T) {
 func TestGetHistoricalTrades(t *testing.T) {
 	t.Parallel()
 
-	_, err := b.GetHistoricalTrades("BTCUSDT", 5, 0)
-	if !mockTests && err == nil {
-		t.Error("Binance GetHistoricalTrades() expecting error")
-	}
-	if mockTests && err == nil {
-		t.Error("Binance GetHistoricalTrades() error", err)
+	_, err := b.GetHistoricalTrades("BTCUSDT", 5, -1)
+	if err != nil {
+		t.Errorf("Binance GetHistoricalTrades() error: %v", err)
 	}
 }
 
@@ -1322,33 +1350,29 @@ func TestGetFee(t *testing.T) {
 
 	if areTestAPIKeysSet() && mockTests {
 		// CryptocurrencyTradeFee Basic
-		if resp, err := b.GetFee(feeBuilder); resp != float64(0.1) || err != nil {
+		if _, err := b.GetFee(feeBuilder); err != nil {
 			t.Error(err)
-			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 		}
 
 		// CryptocurrencyTradeFee High quantity
 		feeBuilder = setFeeBuilder()
 		feeBuilder.Amount = 1000
 		feeBuilder.PurchasePrice = 1000
-		if resp, err := b.GetFee(feeBuilder); resp != float64(100000) || err != nil {
-			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(100000), resp)
+		if _, err := b.GetFee(feeBuilder); err != nil {
 			t.Error(err)
 		}
 
 		// CryptocurrencyTradeFee IsMaker
 		feeBuilder = setFeeBuilder()
 		feeBuilder.IsMaker = true
-		if resp, err := b.GetFee(feeBuilder); resp != float64(0.1) || err != nil {
-			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.1), resp)
+		if _, err := b.GetFee(feeBuilder); err != nil {
 			t.Error(err)
 		}
 
 		// CryptocurrencyTradeFee Negative purchase price
 		feeBuilder = setFeeBuilder()
 		feeBuilder.PurchasePrice = -1000
-		if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+		if _, err := b.GetFee(feeBuilder); err != nil {
 			t.Error(err)
 		}
 	}
@@ -1356,16 +1380,14 @@ func TestGetFee(t *testing.T) {
 	// CryptocurrencyWithdrawalFee Basic
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.CryptocurrencyWithdrawalFee
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0.0005) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.0005), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
-	// CyptocurrencyDepositFee Basic
+	// CryptocurrencyDepositFee Basic
 	feeBuilder = setFeeBuilder()
-	feeBuilder.FeeType = exchange.CyptocurrencyDepositFee
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+	feeBuilder.FeeType = exchange.CryptocurrencyDepositFee
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
@@ -1373,8 +1395,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.InternationalBankDepositFee
 	feeBuilder.FiatCurrency = currency.HKD
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 
@@ -1382,8 +1403,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.InternationalBankWithdrawalFee
 	feeBuilder.FiatCurrency = currency.HKD
-	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+	if _, err := b.GetFee(feeBuilder); err != nil {
 		t.Error(err)
 	}
 }
@@ -1525,10 +1545,6 @@ func TestGetAggregatedTradesBatched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mockExpectTime, err := time.Parse(time.RFC3339, "2020-01-02T16:19:04.8Z")
-	if err != nil {
-		t.Fatal(err)
-	}
 	expectTime, err := time.Parse(time.RFC3339Nano, "2020-01-02T16:19:04.831Z")
 	if err != nil {
 		t.Fatal(err)
@@ -1549,8 +1565,8 @@ func TestGetAggregatedTradesBatched(t *testing.T) {
 				StartTime: start,
 				EndTime:   start.Add(75 * time.Minute),
 			},
-			numExpected:  3,
-			lastExpected: mockExpectTime,
+			numExpected:  1012,
+			lastExpected: time.Date(2020, 1, 2, 16, 18, 31, int(919*time.Millisecond), time.UTC),
 		},
 		{
 			name: "batch with timerange",
@@ -1559,7 +1575,7 @@ func TestGetAggregatedTradesBatched(t *testing.T) {
 				StartTime: start,
 				EndTime:   start.Add(75 * time.Minute),
 			},
-			numExpected:  4303,
+			numExpected:  12130,
 			lastExpected: expectTime,
 		},
 		{
@@ -1570,18 +1586,18 @@ func TestGetAggregatedTradesBatched(t *testing.T) {
 				StartTime: start,
 				Limit:     1001,
 			},
-			numExpected:  4,
-			lastExpected: time.Date(2020, 1, 2, 16, 19, 5, int(200*time.Millisecond), time.UTC),
+			numExpected:  1001,
+			lastExpected: time.Date(2020, 1, 2, 15, 18, 39, int(226*time.Millisecond), time.UTC),
 		},
 		{
 			name: "custom limit with start time set, no end time",
 			args: &AggregatedTradeRequestParams{
 				Symbol:    currency.NewPair(currency.BTC, currency.USDT),
-				StartTime: time.Date(2020, 11, 18, 12, 0, 0, 0, time.UTC),
+				StartTime: time.Date(2020, 11, 18, 23, 0, 28, 921, time.UTC),
 				Limit:     1001,
 			},
 			numExpected:  1001,
-			lastExpected: time.Date(2020, 11, 18, 13, 0, 0, int(34*time.Millisecond), time.UTC),
+			lastExpected: time.Date(2020, 11, 18, 23, 1, 33, int(62*time.Millisecond*10), time.UTC),
 		},
 		{
 			name: "mock recent trades",
@@ -1609,7 +1625,7 @@ func TestGetAggregatedTradesBatched(t *testing.T) {
 			}
 			lastTradeTime := result[len(result)-1].TimeStamp
 			if !lastTradeTime.Equal(tt.lastExpected) {
-				t.Errorf("last trade expected %v, got %v", tt.lastExpected, lastTradeTime)
+				t.Errorf("last trade expected %v, got %v", tt.lastExpected.UTC(), lastTradeTime.UTC())
 			}
 		})
 	}
@@ -1751,17 +1767,20 @@ func TestGetAccountInfo(t *testing.T) {
 		t.Skip("skipping test: api keys not set")
 	}
 	t.Parallel()
-	_, err := b.UpdateAccountInfo(asset.CoinMarginedFutures)
-	if err != nil {
-		t.Error(err)
+	items := asset.Items{
+		asset.CoinMarginedFutures,
+		asset.USDTMarginedFutures,
+		asset.Spot,
+		asset.Margin,
 	}
-	_, err = b.UpdateAccountInfo(asset.USDTMarginedFutures)
-	if err != nil {
-		t.Error(err)
-	}
-	_, err = b.UpdateAccountInfo(asset.Spot)
-	if err != nil {
-		t.Error(err)
+	for i := range items {
+		assetType := items[i]
+		t.Run(fmt.Sprintf("Update info of account [%s]", assetType.String()), func(t *testing.T) {
+			_, err := b.UpdateAccountInfo(assetType)
+			if err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }
 
@@ -1920,7 +1939,7 @@ func TestWithdraw(t *testing.T) {
 
 	withdrawCryptoRequest := withdraw.Request{
 		Exchange:    b.Name,
-		Amount:      0,
+		Amount:      0.00001337,
 		Currency:    currency.BTC,
 		Description: "WITHDRAW IT ALL",
 		Crypto: withdraw.CryptoRequest{
@@ -1934,8 +1953,8 @@ func TestWithdraw(t *testing.T) {
 		t.Error("Withdraw() error", err)
 	case !areTestAPIKeysSet() && err == nil && !mockTests:
 		t.Error("Withdraw() expecting an error when no keys are set")
-	case mockTests && err == nil:
-		t.Error("Mock Withdraw() error cannot be nil")
+	case mockTests && err != nil:
+		t.Error(err)
 	}
 }
 
@@ -2075,6 +2094,8 @@ func TestWsTradeUpdate(t *testing.T) {
 }
 
 func TestWsDepthUpdate(t *testing.T) {
+	binanceOrderBookLock.Lock()
+	defer binanceOrderBookLock.Unlock()
 	b.setupOrderbookManager()
 	seedLastUpdateID := int64(161)
 	book := OrderBook{
@@ -2177,6 +2198,9 @@ func TestWsDepthUpdate(t *testing.T) {
 	if exp, got := 0.163526, ob.Bids[1].Amount; got != exp {
 		t.Fatalf("Unexpected Bid amount. Exp: %f, got %f", exp, got)
 	}
+
+	// reset order book sync status
+	b.obm.state[currency.BTC][currency.USDT][asset.Spot].lastUpdateID = 0
 }
 
 func TestWsBalanceUpdate(t *testing.T) {
@@ -2259,9 +2283,11 @@ func TestExecutionTypeToOrderStatus(t *testing.T) {
 	}
 	testCases := []TestCases{
 		{Case: "NEW", Result: order.New},
-		{Case: "CANCELLED", Result: order.Cancelled},
+		{Case: "PARTIALLY_FILLED", Result: order.PartiallyFilled},
+		{Case: "FILLED", Result: order.Filled},
+		{Case: "CANCELED", Result: order.Cancelled},
+		{Case: "PENDING_CANCEL", Result: order.PendingCancel},
 		{Case: "REJECTED", Result: order.Rejected},
-		{Case: "TRADE", Result: order.PartiallyFilled},
 		{Case: "EXPIRED", Result: order.Expired},
 		{Case: "LOL", Result: order.UnknownStatus},
 	}
@@ -2386,6 +2412,8 @@ var websocketDepthUpdate = []byte(`{"E":1608001030784,"U":7145637266,"a":[["1945
 
 func TestProcessUpdate(t *testing.T) {
 	t.Parallel()
+	binanceOrderBookLock.Lock()
+	defer binanceOrderBookLock.Unlock()
 	p := currency.NewPair(currency.BTC, currency.USDT)
 	var depth WebsocketDepthStream
 	err := json.Unmarshal(websocketDepthUpdate, &depth)
@@ -2407,6 +2435,9 @@ func TestProcessUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// reset order book sync status
+	b.obm.state[currency.BTC][currency.USDT][asset.Spot].lastUpdateID = 0
 }
 
 func TestUFuturesHistoricalTrades(t *testing.T) {
@@ -2475,11 +2506,48 @@ func TestSetExchangeOrderExecutionLimits(t *testing.T) {
 }
 
 func TestWsOrderExecutionReport(t *testing.T) {
-	t.Parallel()
-	payload := []byte(`{"stream":"jTfvpakT2yT0hVIo5gYWVihZhdM2PrBgJUZ5PyfZ4EVpCkx4Uoxk5timcrQc","data":{"e":"executionReport","E":1616627567900,"s":"BTCUSDT","c":"c4wyKsIhoAaittTYlIVLqk","S":"BUY","o":"LIMIT","f":"GTC","q":"0.00028400","p":"52789.10000000","P":"0.00000000","F":"0.00000000","g":-1,"C":"","x":"NEW","X":"NEW","r":"NONE","i":5340845958,"l":"0.00000000","z":"0.00000000","L":"0.00000000","n":"0","N":null,"T":1616627567900,"t":-1,"I":11388173160,"w":true,"m":false,"M":false,"O":1616627567900,"Z":"0.00000000","Y":"0.00000000","Q":"0.00000000"}}`)
+	// cannot run in parallel due to inspecting the DataHandler result
+	payload := []byte(`{"stream":"jTfvpakT2yT0hVIo5gYWVihZhdM2PrBgJUZ5PyfZ4EVpCkx4Uoxk5timcrQc","data":{"e":"executionReport","E":1616627567900,"s":"BTCUSDT","c":"c4wyKsIhoAaittTYlIVLqk","S":"BUY","o":"LIMIT","f":"GTC","q":"0.00028400","p":"52789.10000000","P":"0.00000000","F":"0.00000000","g":-1,"C":"","x":"NEW","X":"NEW","r":"NONE","i":5340845958,"l":"0.00000000","z":"0.00000000","L":"0.00000000","n":"0","N":"BTC","T":1616627567900,"t":-1,"I":11388173160,"w":true,"m":false,"M":false,"O":1616627567900,"Z":"0.00000000","Y":"0.00000000","Q":"0.00000000"}}`)
+	// this is a buy BTC order, normally commission is charged in BTC, vice versa.
+	expRes := order.Detail{
+		Price:                52789.1,
+		Amount:               0.00028400,
+		AverageExecutedPrice: 0,
+		TargetAmount:         0,
+		ExecutedAmount:       0,
+		RemainingAmount:      0.00028400,
+		Cost:                 0,
+		CostAsset:            currency.USDT,
+		Fee:                  0,
+		FeeAsset:             currency.BTC,
+		Exchange:             "Binance",
+		ID:                   "5340845958",
+		ClientOrderID:        "c4wyKsIhoAaittTYlIVLqk",
+		Type:                 order.Limit,
+		Side:                 order.Buy,
+		Status:               order.New,
+		AssetType:            asset.Spot,
+		Date:                 time.Unix(0, 1616627567900*int64(time.Millisecond)),
+		LastUpdated:          time.Unix(0, 1616627567900*int64(time.Millisecond)),
+		Pair:                 currency.NewPair(currency.BTC, currency.USDT),
+	}
+	// empty the channel. otherwise mock_test will fail
+	for len(b.Websocket.DataHandler) > 0 {
+		<-b.Websocket.DataHandler
+	}
+
 	err := b.wsHandleData(payload)
 	if err != nil {
 		t.Fatal(err)
+	}
+	res := <-b.Websocket.DataHandler
+	switch r := res.(type) {
+	case *order.Detail:
+		if !reflect.DeepEqual(expRes, *r) {
+			t.Errorf("Results do not match:\nexpected: %v\nreceived: %v", expRes, *r)
+		}
+	default:
+		t.Fatalf("expected type order.Detail, found %T", res)
 	}
 
 	payload = []byte(`{"stream":"jTfvpakT2yT0hVIo5gYWVihZhdM2PrBgJUZ5PyfZ4EVpCkx4Uoxk5timcrQc","data":{"e":"executionReport","E":1616633041556,"s":"BTCUSDT","c":"YeULctvPAnHj5HXCQo9Mob","S":"BUY","o":"LIMIT","f":"GTC","q":"0.00028600","p":"52436.85000000","P":"0.00000000","F":"0.00000000","g":-1,"C":"","x":"TRADE","X":"FILLED","r":"NONE","i":5341783271,"l":"0.00028600","z":"0.00028600","L":"52436.85000000","n":"0.00000029","N":"BTC","T":1616633041555,"t":726946523,"I":11390206312,"w":false,"m":false,"M":true,"O":1616633041555,"Z":"14.99693910","Y":"14.99693910","Q":"0.00000000"}}`)

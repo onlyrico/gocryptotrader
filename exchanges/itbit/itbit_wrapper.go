@@ -139,9 +139,14 @@ func (i *ItBit) UpdateTradablePairs(forceUpdate bool) error {
 	return common.ErrFunctionNotSupported
 }
 
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (i *ItBit) UpdateTickers(a asset.Item) error {
+	return common.ErrFunctionNotSupported
+}
+
 // UpdateTicker updates and returns the ticker for a currency pair
-func (i *ItBit) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	fpair, err := i.FormatExchangeCurrency(p, assetType)
+func (i *ItBit) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	fpair, err := i.FormatExchangeCurrency(p, a)
 	if err != nil {
 		return nil, err
 	}
@@ -162,12 +167,12 @@ func (i *ItBit) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Pri
 		Pair:         p,
 		LastUpdated:  tick.ServertimeUTC,
 		ExchangeName: i.Name,
-		AssetType:    assetType})
+		AssetType:    a})
 	if err != nil {
 		return nil, err
 	}
 
-	return ticker.GetTicker(i.Name, p, assetType)
+	return ticker.GetTicker(i.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -416,8 +421,8 @@ func (i *ItBit) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (i *ItBit) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (i *ItBit) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -466,25 +471,25 @@ func (i *ItBit) GetOrderInfo(orderID string, pair currency.Pair, assetType asset
 // NOTE: This has not been implemented due to the fact you need to generate a
 // a specific wallet ID and they restrict the amount of deposit address you can
 // request limiting them to 2.
-func (i *ItBit) GetDepositAddress(cryptocurrency currency.Code, accountID string) (string, error) {
+func (i *ItBit) GetDepositAddress(_ currency.Code, _ string) (string, error) {
 	return "", common.ErrNotYetImplemented
 }
 
 // WithdrawCryptocurrencyFunds returns a withdrawal ID when a withdrawal is
 // submitted
-func (i *ItBit) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (i *ItBit) WithdrawCryptocurrencyFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (i *ItBit) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (i *ItBit) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (i *ItBit) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (i *ItBit) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 

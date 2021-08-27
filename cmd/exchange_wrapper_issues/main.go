@@ -40,6 +40,7 @@ func main() {
 		log.Fatalf("Failed to initialise engine. Err: %s", err)
 	}
 	engine.Bot = bot
+	bot.ExchangeManager = engine.SetupExchangeManager()
 
 	bot.Settings = engine.Settings{
 		DisableExchangeAutoPairUpdates: true,
@@ -65,7 +66,7 @@ func main() {
 			wrapperConfig.Exchanges[strings.ToLower(name)] = &config.APICredentialsConfig{}
 		}
 		if shouldLoadExchange(name) {
-			err = bot.LoadExchange(name, true, &wg)
+			err = bot.LoadExchange(name, &wg)
 			if err != nil {
 				log.Printf("Failed to load exchange %s. Err: %s", name, err)
 				continue
@@ -227,6 +228,10 @@ func setExchangeAPIKeys(name string, keys map[string]*config.APICredentialsConfi
 	if keys[lowerExchangeName].OTPSecret != "-" {
 		base.Config.API.Credentials.OTPSecret = keys[lowerExchangeName].OTPSecret
 	}
+	if keys[lowerExchangeName].Subaccount != "" {
+		base.API.Credentials.Subaccount = keys[lowerExchangeName].Subaccount
+		base.Config.API.Credentials.Subaccount = keys[lowerExchangeName].Subaccount
+	}
 
 	base.API.AuthenticatedSupport = true
 	base.API.AuthenticatedWebsocketSupport = true
@@ -281,7 +286,7 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 	var response []ExchangeAssetPairResponses
 	testOrderSide := parseOrderSide(config.OrderSubmission.OrderSide)
 	testOrderType := parseOrderType(config.OrderSubmission.OrderType)
-	assetTypes := base.GetAssetTypes()
+	assetTypes := base.GetAssetTypes(false)
 	if assetTypeOverride != "" {
 		a, err := asset.New(assetTypeOverride)
 		if err != nil {
@@ -568,8 +573,7 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 			Price:  config.OrderSubmission.Price,
 			Amount: config.OrderSubmission.Amount,
 		}
-		var modifyOrderResponse string
-		modifyOrderResponse, err = e.ModifyOrder(&modifyRequest)
+		modifyOrderResponse, err := e.ModifyOrder(&modifyRequest)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
@@ -730,11 +734,15 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 			},
 			Amount: config.OrderSubmission.Amount,
 		}
-		var withdrawCryptocurrencyFundsResponse *withdraw.ExchangeResponse
-		withdrawCryptocurrencyFundsResponse, err = e.WithdrawCryptocurrencyFunds(&withdrawRequest)
 		msg = ""
+		err = withdrawRequest.Validate()
 		if err != nil {
 			msg = err.Error()
+			responseContainer.ErrorCount++
+		}
+		withdrawCryptocurrencyFundsResponse, err := e.WithdrawCryptocurrencyFunds(&withdrawRequest)
+		if err != nil {
+			msg += ", " + err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
@@ -796,8 +804,7 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 				IntermediaryBankCode:          config.BankDetails.IntermediaryBankCode,
 			},
 		}
-		var withdrawFiatFundsResponse *withdraw.ExchangeResponse
-		withdrawFiatFundsResponse, err = e.WithdrawFiatFunds(&withdrawRequestFiat)
+		withdrawFiatFundsResponse, err := e.WithdrawFiatFunds(&withdrawRequestFiat)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
@@ -810,8 +817,7 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 			Response:   withdrawFiatFundsResponse,
 		})
 
-		var withdrawFiatFundsInternationalResponse *withdraw.ExchangeResponse
-		withdrawFiatFundsInternationalResponse, err = e.WithdrawFiatFundsToInternationalBank(&withdrawRequestFiat)
+		withdrawFiatFundsInternationalResponse, err := e.WithdrawFiatFundsToInternationalBank(&withdrawRequestFiat)
 		msg = ""
 		if err != nil {
 			msg = err.Error()

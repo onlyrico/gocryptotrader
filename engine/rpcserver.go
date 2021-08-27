@@ -52,6 +52,7 @@ import (
 
 var (
 	errExchangeNotLoaded    = errors.New("exchange is not loaded/doesn't exist")
+	errExchangeNotEnabled   = errors.New("exchange is not enabled")
 	errExchangeBaseNotFound = errors.New("cannot get exchange base")
 	errInvalidArguments     = errors.New("invalid arguments received")
 	errExchangeNameUnset    = errors.New("exchange name unset")
@@ -62,15 +63,17 @@ var (
 	errDispatchSystem       = errors.New("dispatch system offline")
 	errCurrencyNotEnabled   = errors.New("currency not enabled")
 	errCurrencyPairInvalid  = errors.New("currency provided is not found in the available pairs list")
+	errNoTrades             = errors.New("no trades returned from supplied params")
+	errNilRequestData       = errors.New("nil request data received, cannot continue")
 )
 
 // RPCServer struct
 type RPCServer struct {
-	*Engine
 	gctrpc.UnimplementedGoCryptoTraderServer
+	*Engine
 }
 
-func (bot *Engine) authenticateClient(ctx context.Context) (context.Context, error) {
+func (s *RPCServer) authenticateClient(ctx context.Context) (context.Context, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return ctx, fmt.Errorf("unable to extract metadata")
@@ -90,10 +93,13 @@ func (bot *Engine) authenticateClient(ctx context.Context) (context.Context, err
 		return ctx, fmt.Errorf("unable to base64 decode authorization header")
 	}
 
-	username := strings.Split(string(decoded), ":")[0]
-	password := strings.Split(string(decoded), ":")[1]
+	credentials := strings.Split(string(decoded), ":")
 
-	if username != bot.Config.RemoteControl.Username || password != bot.Config.RemoteControl.Password {
+	username := credentials[0]
+	password := credentials[1]
+
+	if username != s.Config.RemoteControl.Username ||
+		password != s.Config.RemoteControl.Password {
 		return ctx, fmt.Errorf("username/password mismatch")
 	}
 
@@ -108,7 +114,6 @@ func StartRPCServer(engine *Engine) {
 		log.Errorf(log.GRPCSys, "gRPC checkCerts failed. err: %s\n", err)
 		return
 	}
-
 	log.Debugf(log.GRPCSys, "gRPC server support enabled. Starting gRPC server on https://%v.\n", engine.Config.RemoteControl.GRPC.ListenAddress)
 	lis, err := net.Listen("tcp", engine.Config.RemoteControl.GRPC.ListenAddress)
 	if err != nil {
@@ -122,12 +127,12 @@ func StartRPCServer(engine *Engine) {
 		return
 	}
 
+	s := RPCServer{Engine: engine}
 	opts := []grpc.ServerOption{
 		grpc.Creds(creds),
-		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(engine.authenticateClient)),
+		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(s.authenticateClient)),
 	}
 	server := grpc.NewServer(opts...)
-	s := RPCServer{Engine: engine}
 	gctrpc.RegisterGoCryptoTraderServer(server, &s)
 
 	go func() {
@@ -180,8 +185,8 @@ func (s *RPCServer) StartRPCRESTProxy() {
 }
 
 // GetInfo returns info about the current GoCryptoTrader session
-func (s *RPCServer) GetInfo(_ context.Context, r *gctrpc.GetInfoRequest) (*gctrpc.GetInfoResponse, error) {
-	d := time.Since(s.Uptime)
+func (s *RPCServer) GetInfo(_ context.Context, _ *gctrpc.GetInfoRequest) (*gctrpc.GetInfoResponse, error) {
+	d := time.Since(s.uptime)
 	resp := gctrpc.GetInfoResponse{
 		Uptime:               d.String(),
 		EnabledExchanges:     int64(s.Config.CountEnabledExchanges()),
@@ -202,7 +207,7 @@ func (s *RPCServer) GetInfo(_ context.Context, r *gctrpc.GetInfoRequest) (*gctrp
 }
 
 // GetSubsystems returns a list of subsystems and their status
-func (s *RPCServer) GetSubsystems(_ context.Context, r *gctrpc.GetSubsystemsRequest) (*gctrpc.GetSusbsytemsResponse, error) {
+func (s *RPCServer) GetSubsystems(_ context.Context, _ *gctrpc.GetSubsystemsRequest) (*gctrpc.GetSusbsytemsResponse, error) {
 	return &gctrpc.GetSusbsytemsResponse{SubsystemsStatus: s.GetSubsystemsStatus()}, nil
 }
 
@@ -227,7 +232,7 @@ func (s *RPCServer) DisableSubsystem(_ context.Context, r *gctrpc.GenericSubsyst
 }
 
 // GetRPCEndpoints returns a list of API endpoints
-func (s *RPCServer) GetRPCEndpoints(_ context.Context, r *gctrpc.GetRPCEndpointsRequest) (*gctrpc.GetRPCEndpointsResponse, error) {
+func (s *RPCServer) GetRPCEndpoints(_ context.Context, _ *gctrpc.GetRPCEndpointsRequest) (*gctrpc.GetRPCEndpointsResponse, error) {
 	endpoints := GetRPCEndpoints()
 	var resp gctrpc.GetRPCEndpointsResponse
 	resp.Endpoints = make(map[string]*gctrpc.RPCEndpoint)
@@ -241,8 +246,8 @@ func (s *RPCServer) GetRPCEndpoints(_ context.Context, r *gctrpc.GetRPCEndpoints
 }
 
 // GetCommunicationRelayers returns the status of the engines communication relayers
-func (s *RPCServer) GetCommunicationRelayers(_ context.Context, r *gctrpc.GetCommunicationRelayersRequest) (*gctrpc.GetCommunicationRelayersResponse, error) {
-	relayers, err := s.CommsManager.GetStatus()
+func (s *RPCServer) GetCommunicationRelayers(_ context.Context, _ *gctrpc.GetCommunicationRelayersRequest) (*gctrpc.GetCommunicationRelayersResponse, error) {
+	relayers, err := s.CommunicationsManager.GetStatus()
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +281,7 @@ func (s *RPCServer) DisableExchange(_ context.Context, r *gctrpc.GenericExchange
 
 // EnableExchange enables an exchange
 func (s *RPCServer) EnableExchange(_ context.Context, r *gctrpc.GenericExchangeNameRequest) (*gctrpc.GenericResponse, error) {
-	err := s.LoadExchange(r.Exchange, false, nil)
+	err := s.LoadExchange(r.Exchange, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -284,14 +289,17 @@ func (s *RPCServer) EnableExchange(_ context.Context, r *gctrpc.GenericExchangeN
 }
 
 // GetExchangeOTPCode retrieves an exchanges OTP code
-func (s *RPCServer) GetExchangeOTPCode(_ context.Context, r *gctrpc.GenericExchangeNameRequest) (*gctrpc.GetExchangeOTPReponse, error) {
-	result, err := s.GetExchangeoOTPByName(r.Exchange)
-	return &gctrpc.GetExchangeOTPReponse{OtpCode: result}, err
+func (s *RPCServer) GetExchangeOTPCode(_ context.Context, r *gctrpc.GenericExchangeNameRequest) (*gctrpc.GetExchangeOTPResponse, error) {
+	if _, err := s.GetExchangeByName(r.Exchange); err != nil {
+		return nil, err
+	}
+	result, err := s.GetExchangeOTPByName(r.Exchange)
+	return &gctrpc.GetExchangeOTPResponse{OtpCode: result}, err
 }
 
 // GetExchangeOTPCodes retrieves OTP codes for all exchanges which have an
 // OTP secret installed
-func (s *RPCServer) GetExchangeOTPCodes(_ context.Context, r *gctrpc.GetExchangeOTPsRequest) (*gctrpc.GetExchangeOTPsResponse, error) {
+func (s *RPCServer) GetExchangeOTPCodes(_ context.Context, _ *gctrpc.GetExchangeOTPsRequest) (*gctrpc.GetExchangeOTPsResponse, error) {
 	result, err := s.GetExchangeOTPs()
 	return &gctrpc.GetExchangeOTPsResponse{OtpCodes: result}, err
 }
@@ -315,7 +323,7 @@ func (s *RPCServer) GetExchangeInfo(_ context.Context, r *gctrpc.GenericExchange
 	}
 
 	resp.SupportedAssets = make(map[string]*gctrpc.PairsSupported)
-	assets := exchCfg.CurrencyPairs.GetAssetTypes()
+	assets := exchCfg.CurrencyPairs.GetAssetTypes(false)
 	for i := range assets {
 		ps, err := exchCfg.CurrencyPairs.Get(assets[i])
 		if err != nil {
@@ -338,7 +346,11 @@ func (s *RPCServer) GetTicker(_ context.Context, r *gctrpc.GetTickerRequest) (*g
 		return nil, err
 	}
 
-	e := s.GetExchangeByName(r.Exchange)
+	e, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, e, a, currency.Pair{
 		Delimiter: r.Pair.Delimiter,
 		Base:      currency.NewCode(r.Pair.Base),
@@ -362,7 +374,7 @@ func (s *RPCServer) GetTicker(_ context.Context, r *gctrpc.GetTickerRequest) (*g
 
 	resp := &gctrpc.TickerResponse{
 		Pair:        r.Pair,
-		LastUpdated: t.LastUpdated.Unix(),
+		LastUpdated: s.unixTimestamp(t.LastUpdated),
 		Last:        t.Last,
 		High:        t.High,
 		Low:         t.Low,
@@ -377,32 +389,33 @@ func (s *RPCServer) GetTicker(_ context.Context, r *gctrpc.GetTickerRequest) (*g
 
 // GetTickers returns a list of tickers for all enabled exchanges and all
 // enabled currency pairs
-func (s *RPCServer) GetTickers(_ context.Context, r *gctrpc.GetTickersRequest) (*gctrpc.GetTickersResponse, error) {
+func (s *RPCServer) GetTickers(_ context.Context, _ *gctrpc.GetTickersRequest) (*gctrpc.GetTickersResponse, error) {
 	activeTickers := s.GetAllActiveTickers()
 	var tickers []*gctrpc.Tickers
 
 	for x := range activeTickers {
-		var ticker gctrpc.Tickers
-		ticker.Exchange = activeTickers[x].ExchangeName
+		t := &gctrpc.Tickers{
+			Exchange: activeTickers[x].ExchangeName,
+		}
 		for y := range activeTickers[x].ExchangeValues {
-			t := activeTickers[x].ExchangeValues[y]
-			ticker.Tickers = append(ticker.Tickers, &gctrpc.TickerResponse{
+			val := activeTickers[x].ExchangeValues[y]
+			t.Tickers = append(t.Tickers, &gctrpc.TickerResponse{
 				Pair: &gctrpc.CurrencyPair{
-					Delimiter: t.Pair.Delimiter,
-					Base:      t.Pair.Base.String(),
-					Quote:     t.Pair.Quote.String(),
+					Delimiter: val.Pair.Delimiter,
+					Base:      val.Pair.Base.String(),
+					Quote:     val.Pair.Quote.String(),
 				},
-				LastUpdated: t.LastUpdated.Unix(),
-				Last:        t.Last,
-				High:        t.High,
-				Low:         t.Low,
-				Bid:         t.Bid,
-				Ask:         t.Ask,
-				Volume:      t.Volume,
-				PriceAth:    t.PriceATH,
+				LastUpdated: s.unixTimestamp(val.LastUpdated),
+				Last:        val.Last,
+				High:        val.High,
+				Low:         val.Low,
+				Bid:         val.Bid,
+				Ask:         val.Ask,
+				Volume:      val.Volume,
+				PriceAth:    val.PriceATH,
 			})
 		}
-		tickers = append(tickers, &ticker)
+		tickers = append(tickers, t)
 	}
 
 	return &gctrpc.GetTickersResponse{Tickers: tickers}, nil
@@ -454,7 +467,7 @@ func (s *RPCServer) GetOrderbook(_ context.Context, r *gctrpc.GetOrderbookReques
 		Pair:        r.Pair,
 		Bids:        bids,
 		Asks:        asks,
-		LastUpdated: ob.LastUpdated.Unix(),
+		LastUpdated: s.unixTimestamp(ob.LastUpdated),
 		AssetType:   r.AssetType,
 	}
 
@@ -463,46 +476,66 @@ func (s *RPCServer) GetOrderbook(_ context.Context, r *gctrpc.GetOrderbookReques
 
 // GetOrderbooks returns a list of orderbooks for all enabled exchanges and all
 // enabled currency pairs
-func (s *RPCServer) GetOrderbooks(_ context.Context, r *gctrpc.GetOrderbooksRequest) (*gctrpc.GetOrderbooksResponse, error) {
-	activeOrderbooks := GetAllActiveOrderbooks()
-	var orderbooks []*gctrpc.Orderbooks
-
-	for x := range activeOrderbooks {
-		var ob gctrpc.Orderbooks
-		ob.Exchange = activeOrderbooks[x].ExchangeName
-		for y := range activeOrderbooks[x].ExchangeValues {
-			o := activeOrderbooks[x].ExchangeValues[y]
-			var bids []*gctrpc.OrderbookItem
-			for z := range o.Bids {
-				bids = append(bids, &gctrpc.OrderbookItem{
-					Amount: o.Bids[z].Amount,
-					Price:  o.Bids[z].Price,
-				})
-			}
-
-			var asks []*gctrpc.OrderbookItem
-			for z := range o.Asks {
-				asks = append(asks, &gctrpc.OrderbookItem{
-					Amount: o.Asks[z].Amount,
-					Price:  o.Asks[z].Price,
-				})
-			}
-
-			ob.Orderbooks = append(ob.Orderbooks, &gctrpc.OrderbookResponse{
-				Pair: &gctrpc.CurrencyPair{
-					Delimiter: o.Pair.Delimiter,
-					Base:      o.Pair.Base.String(),
-					Quote:     o.Pair.Quote.String(),
-				},
-				LastUpdated: o.LastUpdated.Unix(),
-				Bids:        bids,
-				Asks:        asks,
-			})
+func (s *RPCServer) GetOrderbooks(_ context.Context, _ *gctrpc.GetOrderbooksRequest) (*gctrpc.GetOrderbooksResponse, error) {
+	exchanges := s.ExchangeManager.GetExchanges()
+	var obResponse []*gctrpc.Orderbooks
+	var obs []*gctrpc.OrderbookResponse
+	for x := range exchanges {
+		if !exchanges[x].IsEnabled() {
+			continue
 		}
-		orderbooks = append(orderbooks, &ob)
+		assets := exchanges[x].GetAssetTypes(true)
+		exchName := exchanges[x].GetName()
+		for y := range assets {
+			currencies, err := exchanges[x].GetEnabledPairs(assets[y])
+			if err != nil {
+				log.Errorf(log.RESTSys,
+					"Exchange %s could not retrieve enabled currencies. Err: %s\n",
+					exchName,
+					err)
+				continue
+			}
+			for z := range currencies {
+				resp, err := exchanges[x].FetchOrderbook(currencies[z], assets[y])
+				if err != nil {
+					log.Errorf(log.RESTSys,
+						"Exchange %s failed to retrieve %s orderbook. Err: %s\n", exchName,
+						currencies[z].String(),
+						err)
+					continue
+				}
+				ob := &gctrpc.OrderbookResponse{
+					Pair: &gctrpc.CurrencyPair{
+						Delimiter: currencies[z].Delimiter,
+						Base:      currencies[z].Base.String(),
+						Quote:     currencies[z].Quote.String(),
+					},
+					AssetType:   assets[y].String(),
+					LastUpdated: s.unixTimestamp(resp.LastUpdated),
+				}
+				for i := range resp.Bids {
+					ob.Bids = append(ob.Bids, &gctrpc.OrderbookItem{
+						Amount: resp.Bids[i].Amount,
+						Price:  resp.Bids[i].Price,
+					})
+				}
+
+				for i := range resp.Asks {
+					ob.Asks = append(ob.Asks, &gctrpc.OrderbookItem{
+						Amount: resp.Asks[i].Amount,
+						Price:  resp.Asks[i].Price,
+					})
+				}
+				obs = append(obs, ob)
+			}
+		}
+		obResponse = append(obResponse, &gctrpc.Orderbooks{
+			Exchange:   exchanges[x].GetName(),
+			Orderbooks: obs,
+		})
 	}
 
-	return &gctrpc.GetOrderbooksResponse{Orderbooks: orderbooks}, nil
+	return &gctrpc.GetOrderbooksResponse{Orderbooks: obResponse}, nil
 }
 
 // GetAccountInfo returns an account balance for a specific exchange
@@ -512,7 +545,10 @@ func (s *RPCServer) GetAccountInfo(_ context.Context, r *gctrpc.GetAccountInfoRe
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
 
 	err = checkParams(r.Exchange, exch, assetType, currency.Pair{})
 	if err != nil {
@@ -528,13 +564,17 @@ func (s *RPCServer) GetAccountInfo(_ context.Context, r *gctrpc.GetAccountInfoRe
 }
 
 // UpdateAccountInfo forces an update of the account info
-func (s *RPCServer) UpdateAccountInfo(ctx context.Context, r *gctrpc.GetAccountInfoRequest) (*gctrpc.GetAccountInfoResponse, error) {
+func (s *RPCServer) UpdateAccountInfo(_ context.Context, r *gctrpc.GetAccountInfoRequest) (*gctrpc.GetAccountInfoResponse, error) {
 	assetType, err := asset.New(r.AssetType)
 	if err != nil {
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, assetType, currency.Pair{})
 	if err != nil {
 		return nil, err
@@ -573,7 +613,11 @@ func (s *RPCServer) GetAccountInfoStream(r *gctrpc.GetAccountInfoRequest, stream
 		return err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return err
+	}
+
 	err = checkParams(r.Exchange, exch, assetType, currency.Pair{})
 	if err != nil {
 		return err
@@ -613,7 +657,12 @@ func (s *RPCServer) GetAccountInfoStream(r *gctrpc.GetAccountInfoRequest, stream
 		return err
 	}
 
-	defer pipe.Release()
+	defer func() {
+		pipeErr := pipe.Release()
+		if pipeErr != nil {
+			log.Error(log.DispatchMgr, pipeErr)
+		}
+	}()
 
 	for {
 		data, ok := <-pipe.C
@@ -650,15 +699,14 @@ func (s *RPCServer) GetAccountInfoStream(r *gctrpc.GetAccountInfoRequest, stream
 }
 
 // GetConfig returns the bots config
-func (s *RPCServer) GetConfig(_ context.Context, r *gctrpc.GetConfigRequest) (*gctrpc.GetConfigResponse, error) {
+func (s *RPCServer) GetConfig(_ context.Context, _ *gctrpc.GetConfigRequest) (*gctrpc.GetConfigResponse, error) {
 	return &gctrpc.GetConfigResponse{}, common.ErrNotYetImplemented
 }
 
-// GetPortfolio returns the portfolio details
-func (s *RPCServer) GetPortfolio(_ context.Context, r *gctrpc.GetPortfolioRequest) (*gctrpc.GetPortfolioResponse, error) {
+// GetPortfolio returns the portfoliomanager details
+func (s *RPCServer) GetPortfolio(_ context.Context, _ *gctrpc.GetPortfolioRequest) (*gctrpc.GetPortfolioResponse, error) {
 	var addrs []*gctrpc.PortfolioAddress
-	botAddrs := s.Portfolio.Addresses
-
+	botAddrs := s.portfolioManager.GetAddresses()
 	for x := range botAddrs {
 		addrs = append(addrs, &gctrpc.PortfolioAddress{
 			Address:     botAddrs[x].Address,
@@ -675,9 +723,9 @@ func (s *RPCServer) GetPortfolio(_ context.Context, r *gctrpc.GetPortfolioReques
 	return resp, nil
 }
 
-// GetPortfolioSummary returns the portfolio summary
-func (s *RPCServer) GetPortfolioSummary(_ context.Context, r *gctrpc.GetPortfolioSummaryRequest) (*gctrpc.GetPortfolioSummaryResponse, error) {
-	result := s.Portfolio.GetPortfolioSummary()
+// GetPortfolioSummary returns the portfoliomanager summary
+func (s *RPCServer) GetPortfolioSummary(_ context.Context, _ *gctrpc.GetPortfolioSummaryRequest) (*gctrpc.GetPortfolioSummaryResponse, error) {
+	result := s.portfolioManager.GetPortfolioSummary()
 	var resp gctrpc.GetPortfolioSummaryResponse
 
 	p := func(coins []portfolio.Coin) []*gctrpc.Coin {
@@ -731,9 +779,9 @@ func (s *RPCServer) GetPortfolioSummary(_ context.Context, r *gctrpc.GetPortfoli
 	return &resp, nil
 }
 
-// AddPortfolioAddress adds an address to the portfolio manager
+// AddPortfolioAddress adds an address to the portfoliomanager manager
 func (s *RPCServer) AddPortfolioAddress(_ context.Context, r *gctrpc.AddPortfolioAddressRequest) (*gctrpc.GenericResponse, error) {
-	err := s.Portfolio.AddAddress(r.Address,
+	err := s.portfolioManager.AddAddress(r.Address,
 		r.Description,
 		currency.NewCode(r.CoinType),
 		r.Balance)
@@ -743,9 +791,9 @@ func (s *RPCServer) AddPortfolioAddress(_ context.Context, r *gctrpc.AddPortfoli
 	return &gctrpc.GenericResponse{Status: MsgStatusSuccess}, nil
 }
 
-// RemovePortfolioAddress removes an address from the portfolio manager
+// RemovePortfolioAddress removes an address from the portfoliomanager manager
 func (s *RPCServer) RemovePortfolioAddress(_ context.Context, r *gctrpc.RemovePortfolioAddressRequest) (*gctrpc.GenericResponse, error) {
-	err := s.Portfolio.RemoveAddress(r.Address,
+	err := s.portfolioManager.RemoveAddress(r.Address,
 		r.Description,
 		currency.NewCode(r.CoinType))
 	if err != nil {
@@ -755,7 +803,7 @@ func (s *RPCServer) RemovePortfolioAddress(_ context.Context, r *gctrpc.RemovePo
 }
 
 // GetForexProviders returns a list of available forex providers
-func (s *RPCServer) GetForexProviders(_ context.Context, r *gctrpc.GetForexProvidersRequest) (*gctrpc.GetForexProvidersResponse, error) {
+func (s *RPCServer) GetForexProviders(_ context.Context, _ *gctrpc.GetForexProvidersRequest) (*gctrpc.GetForexProvidersResponse, error) {
 	providers := s.Config.GetForexProviders()
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("forex providers is empty")
@@ -777,7 +825,7 @@ func (s *RPCServer) GetForexProviders(_ context.Context, r *gctrpc.GetForexProvi
 }
 
 // GetForexRates returns a list of forex rates
-func (s *RPCServer) GetForexRates(_ context.Context, r *gctrpc.GetForexRatesRequest) (*gctrpc.GetForexRatesResponse, error) {
+func (s *RPCServer) GetForexRates(_ context.Context, _ *gctrpc.GetForexRatesRequest) (*gctrpc.GetForexRatesResponse, error) {
 	rates, err := currency.GetExchangeRates()
 	if err != nil {
 		return nil, err
@@ -829,7 +877,12 @@ func (s *RPCServer) GetOrders(_ context.Context, r *gctrpc.GetOrdersRequest) (*g
 		r.Pair.Base,
 		r.Pair.Quote,
 		r.Pair.Delimiter)
-	exch := s.GetExchangeByName(r.Exchange)
+
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, cp)
 	if err != nil {
 		return nil, err
@@ -848,8 +901,9 @@ func (s *RPCServer) GetOrders(_ context.Context, r *gctrpc.GetOrdersRequest) (*g
 			return nil, err
 		}
 	}
-	if !start.IsZero() && !end.IsZero() && start.After(end) {
-		return nil, errInvalidTimes
+	err = common.StartEndTimeCheck(start, end)
+	if err != nil {
+		return nil, err
 	}
 
 	request := &order.GetOrdersRequest{
@@ -884,7 +938,7 @@ func (s *RPCServer) GetOrders(_ context.Context, r *gctrpc.GetOrdersRequest) (*g
 				Total:     resp[x].Trades[i].Total,
 			}
 			if !resp[x].Trades[i].Timestamp.IsZero() {
-				t.CreationTime = resp[x].Trades[i].Timestamp.Unix()
+				t.CreationTime = s.unixTimestamp(resp[x].Trades[i].Timestamp)
 			}
 			trades = append(trades, t)
 		}
@@ -906,10 +960,99 @@ func (s *RPCServer) GetOrders(_ context.Context, r *gctrpc.GetOrdersRequest) (*g
 			Trades:        trades,
 		}
 		if !resp[x].Date.IsZero() {
-			o.CreationTime = resp[x].Date.Unix()
+			o.CreationTime = s.unixTimestamp(resp[x].Date)
 		}
 		if !resp[x].LastUpdated.IsZero() {
-			o.UpdateTime = resp[x].LastUpdated.Unix()
+			o.UpdateTime = s.unixTimestamp(resp[x].LastUpdated)
+		}
+		orders = append(orders, o)
+	}
+
+	return &gctrpc.GetOrdersResponse{Orders: orders}, nil
+}
+
+// GetManagedOrders returns all orders from the Order Manager for the provided exchange,
+// asset type  and currency pair
+func (s *RPCServer) GetManagedOrders(_ context.Context, r *gctrpc.GetOrdersRequest) (*gctrpc.GetOrdersResponse, error) {
+	if r == nil {
+		return nil, errInvalidArguments
+	}
+
+	a, err := asset.New(r.AssetType)
+	if err != nil {
+		return nil, err
+	}
+
+	if r.Pair == nil {
+		return nil, errCurrencyPairUnset
+	}
+	cp := currency.NewPairWithDelimiter(
+		r.Pair.Base,
+		r.Pair.Quote,
+		r.Pair.Delimiter)
+
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkParams(r.Exchange, exch, a, cp)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp []order.Detail
+	filter := order.Filter{
+		Exchange:  exch.GetName(),
+		Pair:      cp,
+		AssetType: a,
+	}
+	resp, err = s.OrderManager.GetOrdersFiltered(&filter)
+	if err != nil {
+		return nil, err
+	}
+
+	var orders []*gctrpc.OrderDetails
+	for x := range resp {
+		var trades []*gctrpc.TradeHistory
+		for i := range resp[x].Trades {
+			t := &gctrpc.TradeHistory{
+				Id:        resp[x].Trades[i].TID,
+				Price:     resp[x].Trades[i].Price,
+				Amount:    resp[x].Trades[i].Amount,
+				Exchange:  r.Exchange,
+				AssetType: a.String(),
+				OrderSide: resp[x].Trades[i].Side.String(),
+				Fee:       resp[x].Trades[i].Fee,
+				Total:     resp[x].Trades[i].Total,
+			}
+			if !resp[x].Trades[i].Timestamp.IsZero() {
+				t.CreationTime = s.unixTimestamp(resp[x].Trades[i].Timestamp)
+			}
+			trades = append(trades, t)
+		}
+		o := &gctrpc.OrderDetails{
+			Exchange:      r.Exchange,
+			Id:            resp[x].ID,
+			ClientOrderId: resp[x].ClientOrderID,
+			BaseCurrency:  resp[x].Pair.Base.String(),
+			QuoteCurrency: resp[x].Pair.Quote.String(),
+			AssetType:     resp[x].AssetType.String(),
+			OrderSide:     resp[x].Side.String(),
+			OrderType:     resp[x].Type.String(),
+			Status:        resp[x].Status.String(),
+			Price:         resp[x].Price,
+			Amount:        resp[x].Amount,
+			OpenVolume:    resp[x].Amount - resp[x].ExecutedAmount,
+			Fee:           resp[x].Fee,
+			Cost:          resp[x].Cost,
+			Trades:        trades,
+		}
+		if !resp[x].Date.IsZero() {
+			o.CreationTime = s.unixTimestamp(resp[x].Date)
+		}
+		if !resp[x].LastUpdated.IsZero() {
+			o.UpdateTime = s.unixTimestamp(resp[x].LastUpdated)
 		}
 		orders = append(orders, o)
 	}
@@ -938,7 +1081,11 @@ func (s *RPCServer) GetOrder(_ context.Context, r *gctrpc.GetOrderRequest) (*gct
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, pair)
 	if err != nil {
 		return nil, err
@@ -951,7 +1098,7 @@ func (s *RPCServer) GetOrder(_ context.Context, r *gctrpc.GetOrderRequest) (*gct
 	var trades []*gctrpc.TradeHistory
 	for i := range result.Trades {
 		trades = append(trades, &gctrpc.TradeHistory{
-			CreationTime: result.Trades[i].Timestamp.Unix(),
+			CreationTime: s.unixTimestamp(result.Trades[i].Timestamp),
 			Id:           result.Trades[i].TID,
 			Price:        result.Trades[i].Price,
 			Amount:       result.Trades[i].Amount,
@@ -964,16 +1111,17 @@ func (s *RPCServer) GetOrder(_ context.Context, r *gctrpc.GetOrderRequest) (*gct
 	}
 
 	var creationTime, updateTime int64
-	if result.Date.Unix() > 0 {
-		creationTime = result.Date.Unix()
+	if !result.Date.IsZero() {
+		creationTime = s.unixTimestamp(result.Date)
 	}
-	if result.LastUpdated.Unix() > 0 {
-		updateTime = result.LastUpdated.Unix()
+	if !result.LastUpdated.IsZero() {
+		updateTime = s.unixTimestamp(result.LastUpdated)
 	}
 
 	return &gctrpc.OrderDetails{
 		Exchange:      result.Exchange,
 		Id:            result.ID,
+		ClientOrderId: result.ClientOrderID,
 		BaseCurrency:  result.Pair.Base.String(),
 		QuoteCurrency: result.Pair.Quote.String(),
 		AssetType:     result.AssetType.String(),
@@ -1009,21 +1157,26 @@ func (s *RPCServer) SubmitOrder(_ context.Context, r *gctrpc.SubmitOrderRequest)
 		Quote:     currency.NewCode(r.Pair.Quote),
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, p)
 	if err != nil {
 		return nil, err
 	}
 
 	submission := &order.Submit{
-		Pair:      p,
-		Side:      order.Side(r.Side),
-		Type:      order.Type(r.OrderType),
-		Amount:    r.Amount,
-		Price:     r.Price,
-		ClientID:  r.ClientId,
-		Exchange:  r.Exchange,
-		AssetType: a,
+		Pair:          p,
+		Side:          order.Side(r.Side),
+		Type:          order.Type(r.OrderType),
+		Amount:        r.Amount,
+		Price:         r.Price,
+		ClientID:      r.ClientId,
+		ClientOrderID: r.ClientId,
+		Exchange:      r.Exchange,
+		AssetType:     a,
 	}
 
 	resp, err := s.OrderManager.Submit(submission)
@@ -1061,8 +1214,12 @@ func (s *RPCServer) SimulateOrder(_ context.Context, r *gctrpc.SimulateOrderRequ
 		Quote:     currency.NewCode(r.Pair.Quote),
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
-	err := checkParams(r.Exchange, exch, asset.Spot, p)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkParams(r.Exchange, exch, asset.Spot, p)
 	if err != nil {
 		return nil, err
 	}
@@ -1108,8 +1265,12 @@ func (s *RPCServer) WhaleBomb(_ context.Context, r *gctrpc.WhaleBombRequest) (*g
 		Quote:     currency.NewCode(r.Pair.Quote),
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
-	err := checkParams(r.Exchange, exch, asset.Item(""), p)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkParams(r.Exchange, exch, asset.Spot, p)
 	if err != nil {
 		return nil, err
 	}
@@ -1126,6 +1287,9 @@ func (s *RPCServer) WhaleBomb(_ context.Context, r *gctrpc.WhaleBombRequest) (*g
 	}
 
 	result, err := o.WhaleBomb(r.PriceTarget, buy)
+	if err != nil {
+		return nil, err
+	}
 	var resp gctrpc.SimulateOrderResponse
 	for x := range result.Orders {
 		resp.Orders = append(resp.Orders, &gctrpc.OrderbookItem{
@@ -1160,13 +1324,18 @@ func (s *RPCServer) CancelOrder(_ context.Context, r *gctrpc.CancelOrderRequest)
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, p)
 	if err != nil {
 		return nil, err
 	}
 
-	err = exch.CancelOrder(&order.Cancel{
+	err = s.OrderManager.Cancel(&order.Cancel{
+		Exchange:      r.Exchange,
 		AccountID:     r.AccountId,
 		ID:            r.OrderId,
 		Side:          order.Side(r.Side),
@@ -1194,7 +1363,11 @@ func (s *RPCServer) CancelBatchOrders(_ context.Context, r *gctrpc.CancelBatchOr
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, assetType, pair)
 	if err != nil {
 		return nil, err
@@ -1229,9 +1402,9 @@ func (s *RPCServer) CancelBatchOrders(_ context.Context, r *gctrpc.CancelBatchOr
 
 // CancelAllOrders cancels all orders, filterable by exchange
 func (s *RPCServer) CancelAllOrders(_ context.Context, r *gctrpc.CancelAllOrdersRequest) (*gctrpc.CancelAllOrdersResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return &gctrpc.CancelAllOrdersResponse{}, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := exch.CancelAllOrders(nil)
@@ -1244,19 +1417,58 @@ func (s *RPCServer) CancelAllOrders(_ context.Context, r *gctrpc.CancelAllOrders
 	}, nil
 }
 
+func (s *RPCServer) ModifyOrder(_ context.Context, r *gctrpc.ModifyOrderRequest) (*gctrpc.ModifyOrderResponse, error) {
+	assetType, err := asset.New(r.Asset)
+	if err != nil {
+		return nil, err
+	}
+	pair := currency.Pair{
+		Delimiter: r.Pair.Delimiter,
+		Base:      currency.NewCode(r.Pair.Base),
+		Quote:     currency.NewCode(r.Pair.Quote),
+	}
+
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkParams(r.Exchange, exch, assetType, pair)
+	if err != nil {
+		return nil, err
+	}
+
+	mod := order.Modify{
+		Exchange:  r.Exchange,
+		AssetType: assetType,
+		Pair:      pair,
+		ID:        r.OrderId,
+
+		Amount: r.Amount,
+		Price:  r.Price,
+	}
+	resp, err := s.OrderManager.Modify(&mod)
+	if err != nil {
+		return nil, err
+	}
+	return &gctrpc.ModifyOrderResponse{
+		ModifiedOrderId: resp.OrderID,
+	}, nil
+}
+
 // GetEvents returns the stored events list
-func (s *RPCServer) GetEvents(_ context.Context, r *gctrpc.GetEventsRequest) (*gctrpc.GetEventsResponse, error) {
+func (s *RPCServer) GetEvents(_ context.Context, _ *gctrpc.GetEventsRequest) (*gctrpc.GetEventsResponse, error) {
 	return &gctrpc.GetEventsResponse{}, common.ErrNotYetImplemented
 }
 
 // AddEvent adds an event
 func (s *RPCServer) AddEvent(_ context.Context, r *gctrpc.AddEventRequest) (*gctrpc.AddEventResponse, error) {
 	evtCondition := EventConditionParams{
-		CheckBids:        r.ConditionParams.CheckBids,
-		CheckBidsAndAsks: r.ConditionParams.CheckBidsAndAsks,
-		Condition:        r.ConditionParams.Condition,
-		OrderbookAmount:  r.ConditionParams.OrderbookAmount,
-		Price:            r.ConditionParams.Price,
+		CheckBids:       r.ConditionParams.CheckBids,
+		CheckAsks:       r.ConditionParams.CheckAsks,
+		Condition:       r.ConditionParams.Condition,
+		OrderbookAmount: r.ConditionParams.OrderbookAmount,
+		Price:           r.ConditionParams.Price,
 	}
 
 	p := currency.NewPairWithDelimiter(r.Pair.Base,
@@ -1267,13 +1479,17 @@ func (s *RPCServer) AddEvent(_ context.Context, r *gctrpc.AddEventRequest) (*gct
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, p)
 	if err != nil {
 		return nil, err
 	}
 
-	id, err := Add(r.Exchange, r.Item, evtCondition, p, a, r.Action)
+	id, err := s.eventManager.Add(r.Exchange, r.Item, evtCondition, p, a, r.Action)
 	if err != nil {
 		return nil, err
 	}
@@ -1283,7 +1499,7 @@ func (s *RPCServer) AddEvent(_ context.Context, r *gctrpc.AddEventRequest) (*gct
 
 // RemoveEvent removes an event, specified by an event ID
 func (s *RPCServer) RemoveEvent(_ context.Context, r *gctrpc.RemoveEventRequest) (*gctrpc.GenericResponse, error) {
-	if !Remove(r.Id) {
+	if !s.eventManager.Remove(r.Id) {
 		return nil, fmt.Errorf("event %d not removed", r.Id)
 	}
 	return &gctrpc.GenericResponse{Status: MsgStatusSuccess,
@@ -1293,9 +1509,9 @@ func (s *RPCServer) RemoveEvent(_ context.Context, r *gctrpc.RemoveEventRequest)
 // GetCryptocurrencyDepositAddresses returns a list of cryptocurrency deposit
 // addresses specified by an exchange
 func (s *RPCServer) GetCryptocurrencyDepositAddresses(_ context.Context, r *gctrpc.GetCryptocurrencyDepositAddressesRequest) (*gctrpc.GetCryptocurrencyDepositAddressesResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	_, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	result, err := s.GetCryptocurrencyDepositAddressesByExchange(r.Exchange)
@@ -1305,9 +1521,9 @@ func (s *RPCServer) GetCryptocurrencyDepositAddresses(_ context.Context, r *gctr
 // GetCryptocurrencyDepositAddress returns a cryptocurrency deposit address
 // specified by exchange and cryptocurrency
 func (s *RPCServer) GetCryptocurrencyDepositAddress(_ context.Context, r *gctrpc.GetCryptocurrencyDepositAddressRequest) (*gctrpc.GetCryptocurrencyDepositAddressResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	_, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	addr, err := s.GetExchangeCryptocurrencyDepositAddress(r.Exchange, "", currency.NewCode(r.Cryptocurrency))
@@ -1317,9 +1533,9 @@ func (s *RPCServer) GetCryptocurrencyDepositAddress(_ context.Context, r *gctrpc
 // WithdrawCryptocurrencyFunds withdraws cryptocurrency funds specified by
 // exchange
 func (s *RPCServer) WithdrawCryptocurrencyFunds(_ context.Context, r *gctrpc.WithdrawCryptoRequest) (*gctrpc.WithdrawResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	_, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	request := &withdraw.Request{
@@ -1335,7 +1551,7 @@ func (s *RPCServer) WithdrawCryptocurrencyFunds(_ context.Context, r *gctrpc.Wit
 		},
 	}
 
-	resp, err := s.Engine.SubmitWithdrawal(request)
+	resp, err := s.Engine.WithdrawManager.SubmitWithdrawal(request)
 	if err != nil {
 		return nil, err
 	}
@@ -1348,12 +1564,11 @@ func (s *RPCServer) WithdrawCryptocurrencyFunds(_ context.Context, r *gctrpc.Wit
 
 // WithdrawFiatFunds withdraws fiat funds specified by exchange
 func (s *RPCServer) WithdrawFiatFunds(_ context.Context, r *gctrpc.WithdrawFiatRequest) (*gctrpc.WithdrawResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
-	var bankAccount *banking.Account
 	bankAccount, err := banking.GetBankAccountByID(r.BankAccountId)
 	if err != nil {
 		base := exch.GetBase()
@@ -1377,7 +1592,7 @@ func (s *RPCServer) WithdrawFiatFunds(_ context.Context, r *gctrpc.WithdrawFiatR
 		},
 	}
 
-	resp, err := s.Engine.SubmitWithdrawal(request)
+	resp, err := s.Engine.WithdrawManager.SubmitWithdrawal(request)
 	if err != nil {
 		return nil, err
 	}
@@ -1393,7 +1608,7 @@ func (s *RPCServer) WithdrawalEventByID(_ context.Context, r *gctrpc.WithdrawalE
 	if !s.Config.Database.Enabled {
 		return nil, database.ErrDatabaseSupportDisabled
 	}
-	v, err := WithdrawalEventByID(r.Id)
+	v, err := s.WithdrawManager.WithdrawalEventByID(r.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -1452,9 +1667,9 @@ func (s *RPCServer) WithdrawalEventByID(_ context.Context, r *gctrpc.WithdrawalE
 func (s *RPCServer) WithdrawalEventsByExchange(_ context.Context, r *gctrpc.WithdrawalEventsByExchangeRequest) (*gctrpc.WithdrawalEventsByExchangeResponse, error) {
 	if !s.Config.Database.Enabled {
 		if r.Id == "" {
-			exch := s.GetExchangeByName(r.Exchange)
-			if exch == nil {
-				return nil, errExchangeNotLoaded
+			exch, err := s.GetExchangeByName(r.Exchange)
+			if err != nil {
+				return nil, err
 			}
 
 			c := currency.NewCode(strings.ToUpper(r.Currency))
@@ -1468,14 +1683,14 @@ func (s *RPCServer) WithdrawalEventsByExchange(_ context.Context, r *gctrpc.With
 		return nil, database.ErrDatabaseSupportDisabled
 	}
 	if r.Id == "" {
-		ret, err := WithdrawalEventByExchange(r.Exchange, int(r.Limit))
+		ret, err := s.WithdrawManager.WithdrawalEventByExchange(r.Exchange, int(r.Limit))
 		if err != nil {
 			return nil, err
 		}
 		return parseMultipleEvents(ret), nil
 	}
 
-	ret, err := WithdrawalEventByExchangeID(r.Exchange, r.Id)
+	ret, err := s.WithdrawManager.WithdrawalEventByExchangeID(r.Exchange, r.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -1485,17 +1700,20 @@ func (s *RPCServer) WithdrawalEventsByExchange(_ context.Context, r *gctrpc.With
 
 // WithdrawalEventsByDate returns previous withdrawal request details by exchange
 func (s *RPCServer) WithdrawalEventsByDate(_ context.Context, r *gctrpc.WithdrawalEventsByDateRequest) (*gctrpc.WithdrawalEventsByExchangeResponse, error) {
-	UTCStartTime, err := time.Parse(common.SimpleTimeFormat, r.Start)
+	start, err := time.Parse(common.SimpleTimeFormat, r.Start)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
 	}
-	var UTCEndTime time.Time
-	UTCEndTime, err = time.Parse(common.SimpleTimeFormat, r.End)
+	end, err := time.Parse(common.SimpleTimeFormat, r.End)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return nil, err
 	}
 	var ret []*withdraw.Response
-	ret, err = WithdrawEventByDate(r.Exchange, UTCStartTime, UTCEndTime, int(r.Limit))
+	ret, err = s.WithdrawManager.WithdrawEventByDate(r.Exchange, start, end, int(r.Limit))
 	if err != nil {
 		return nil, err
 	}
@@ -1538,7 +1756,7 @@ func (s *RPCServer) GetExchangePairs(_ context.Context, r *gctrpc.GetExchangePai
 	if err != nil {
 		return nil, err
 	}
-	assetTypes := exchCfg.CurrencyPairs.GetAssetTypes()
+	assetTypes := exchCfg.CurrencyPairs.GetAssetTypes(false)
 
 	var a asset.Item
 	if r.Asset != "" {
@@ -1583,7 +1801,11 @@ func (s *RPCServer) SetExchangePair(_ context.Context, r *gctrpc.SetExchangePair
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, currency.Pair{})
 	if err != nil {
 		return nil, err
@@ -1664,7 +1886,11 @@ func (s *RPCServer) GetOrderbookStream(r *gctrpc.GetOrderbookStreamRequest, stre
 		Quote:     currency.NewCode(r.Pair.Quote),
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return err
+	}
+
 	err = checkParams(r.Exchange, exch, a, p)
 	if err != nil {
 		return err
@@ -1710,12 +1936,21 @@ func (s *RPCServer) GetExchangeOrderbookStream(r *gctrpc.GetExchangeOrderbookStr
 		return errExchangeNameUnset
 	}
 
+	if _, err := s.GetExchangeByName(r.Exchange); err != nil {
+		return err
+	}
+
 	pipe, err := orderbook.SubscribeToExchangeOrderbooks(r.Exchange)
 	if err != nil {
 		return err
 	}
 
-	defer pipe.Release()
+	defer func() {
+		pipeErr := pipe.Release()
+		if pipeErr != nil {
+			log.Error(log.DispatchMgr, pipeErr)
+		}
+	}()
 
 	for {
 		data, ok := <-pipe.C
@@ -1757,6 +1992,10 @@ func (s *RPCServer) GetTickerStream(r *gctrpc.GetTickerStreamRequest, stream gct
 		return errExchangeNameUnset
 	}
 
+	if _, err := s.GetExchangeByName(r.Exchange); err != nil {
+		return err
+	}
+
 	a, err := asset.New(r.AssetType)
 	if err != nil {
 		return err
@@ -1780,7 +2019,12 @@ func (s *RPCServer) GetTickerStream(r *gctrpc.GetTickerStreamRequest, stream gct
 		return err
 	}
 
-	defer pipe.Release()
+	defer func() {
+		pipeErr := pipe.Release()
+		if pipeErr != nil {
+			log.Error(log.DispatchMgr, pipeErr)
+		}
+	}()
 
 	for {
 		data, ok := <-pipe.C
@@ -1794,7 +2038,7 @@ func (s *RPCServer) GetTickerStream(r *gctrpc.GetTickerStreamRequest, stream gct
 				Base:      t.Pair.Base.String(),
 				Quote:     t.Pair.Quote.String(),
 				Delimiter: t.Pair.Delimiter},
-			LastUpdated: t.LastUpdated.Unix(),
+			LastUpdated: s.unixTimestamp(t.LastUpdated),
 			Last:        t.Last,
 			High:        t.High,
 			Low:         t.Low,
@@ -1815,12 +2059,21 @@ func (s *RPCServer) GetExchangeTickerStream(r *gctrpc.GetExchangeTickerStreamReq
 		return errExchangeNameUnset
 	}
 
+	if _, err := s.GetExchangeByName(r.Exchange); err != nil {
+		return err
+	}
+
 	pipe, err := ticker.SubscribeToExchangeTickers(r.Exchange)
 	if err != nil {
 		return err
 	}
 
-	defer pipe.Release()
+	defer func() {
+		pipeErr := pipe.Release()
+		if pipeErr != nil {
+			log.Error(log.DispatchMgr, pipeErr)
+		}
+	}()
 
 	for {
 		data, ok := <-pipe.C
@@ -1834,7 +2087,7 @@ func (s *RPCServer) GetExchangeTickerStream(r *gctrpc.GetExchangeTickerStreamReq
 				Base:      t.Pair.Base.String(),
 				Quote:     t.Pair.Quote.String(),
 				Delimiter: t.Pair.Delimiter},
-			LastUpdated: t.LastUpdated.Unix(),
+			LastUpdated: s.unixTimestamp(t.LastUpdated),
 			Last:        t.Last,
 			High:        t.High,
 			Low:         t.Low,
@@ -1851,16 +2104,19 @@ func (s *RPCServer) GetExchangeTickerStream(r *gctrpc.GetExchangeTickerStreamReq
 
 // GetAuditEvent returns matching audit events from database
 func (s *RPCServer) GetAuditEvent(_ context.Context, r *gctrpc.GetAuditEventRequest) (*gctrpc.GetAuditEventResponse, error) {
-	UTCStartTime, err := time.Parse(common.SimpleTimeFormat, r.StartDate)
+	start, err := time.Parse(common.SimpleTimeFormat, r.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
+	}
+	end, err := time.Parse(common.SimpleTimeFormat, r.EndDate)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return nil, err
 	}
-
-	UTCEndTime, err := time.Parse(common.SimpleTimeFormat, r.EndDate)
-	if err != nil {
-		return nil, err
-	}
-	events, err := audit.GetEvent(UTCStartTime, UTCEndTime, r.OrderBy, int(r.Limit))
+	events, err := audit.GetEvent(start, end, r.OrderBy, int(r.Limit))
 	if err != nil {
 		return nil, err
 	}
@@ -1896,19 +2152,18 @@ func (s *RPCServer) GetAuditEvent(_ context.Context, r *gctrpc.GetAuditEventRequ
 
 // GetHistoricCandles returns historical candles for a given exchange
 func (s *RPCServer) GetHistoricCandles(_ context.Context, r *gctrpc.GetHistoricCandlesRequest) (*gctrpc.GetHistoricCandlesResponse, error) {
-	UTCStartTime, err := time.Parse(common.SimpleTimeFormat, r.Start)
+	start, err := time.Parse(common.SimpleTimeFormat, r.Start)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
+	}
+	end, err := time.Parse(common.SimpleTimeFormat, r.End)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return nil, err
 	}
-	var UTCEndTime time.Time
-	UTCEndTime, err = time.Parse(common.SimpleTimeFormat, r.End)
-	if err != nil {
-		return nil, err
-	}
-	if UTCStartTime.After(UTCEndTime) || UTCStartTime.Equal(UTCEndTime) {
-		return nil, errInvalidTimes
-	}
-
 	if r.Pair == nil {
 		return nil, errCurrencyPairUnset
 	}
@@ -1924,7 +2179,11 @@ func (s *RPCServer) GetHistoricCandles(_ context.Context, r *gctrpc.GetHistoricC
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, pair)
 	if err != nil {
 		return nil, err
@@ -1945,8 +2204,8 @@ func (s *RPCServer) GetHistoricCandles(_ context.Context, r *gctrpc.GetHistoricC
 			pair,
 			a,
 			interval,
-			UTCStartTime,
-			UTCEndTime)
+			start,
+			end)
 		if err != nil {
 			return nil, err
 		}
@@ -1954,14 +2213,14 @@ func (s *RPCServer) GetHistoricCandles(_ context.Context, r *gctrpc.GetHistoricC
 		if r.ExRequest {
 			klineItem, err = exch.GetHistoricCandlesExtended(pair,
 				a,
-				UTCStartTime,
-				UTCEndTime,
+				start,
+				end,
 				interval)
 		} else {
 			klineItem, err = exch.GetHistoricCandles(pair,
 				a,
-				UTCStartTime,
-				UTCEndTime,
+				start,
+				end,
 				interval)
 		}
 	}
@@ -1972,7 +2231,7 @@ func (s *RPCServer) GetHistoricCandles(_ context.Context, r *gctrpc.GetHistoricC
 
 	if r.FillMissingWithTrades {
 		var tradeDataKline *kline.Item
-		tradeDataKline, err = fillMissingCandlesWithStoredTrades(UTCStartTime, UTCEndTime, &klineItem)
+		tradeDataKline, err = fillMissingCandlesWithStoredTrades(start, end, &klineItem)
 		if err != nil {
 			return nil, err
 		}
@@ -2061,8 +2320,8 @@ func fillMissingCandlesWithStoredTrades(startTime, endTime time.Time, klineItem 
 }
 
 // GCTScriptStatus returns a slice of current running scripts that includes next run time and uuid
-func (s *RPCServer) GCTScriptStatus(_ context.Context, r *gctrpc.GCTScriptStatusRequest) (*gctrpc.GCTScriptStatusResponse, error) {
-	if !s.GctScriptManager.Started() {
+func (s *RPCServer) GCTScriptStatus(_ context.Context, _ *gctrpc.GCTScriptStatusRequest) (*gctrpc.GCTScriptStatusResponse, error) {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GCTScriptStatusResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
@@ -2071,7 +2330,7 @@ func (s *RPCServer) GCTScriptStatus(_ context.Context, r *gctrpc.GCTScriptStatus
 	}
 
 	resp := &gctrpc.GCTScriptStatusResponse{
-		Status: fmt.Sprintf("%v of %v virtual machines running", gctscript.VMSCount.Len(), s.GctScriptManager.GetMaxVirtualMachines()),
+		Status: fmt.Sprintf("%v of %v virtual machines running", gctscript.VMSCount.Len(), s.gctScriptManager.GetMaxVirtualMachines()),
 	}
 
 	gctscript.AllVMSync.Range(func(k, v interface{}) bool {
@@ -2090,7 +2349,7 @@ func (s *RPCServer) GCTScriptStatus(_ context.Context, r *gctrpc.GCTScriptStatus
 
 // GCTScriptQuery queries a running script and returns script running information
 func (s *RPCServer) GCTScriptQuery(_ context.Context, r *gctrpc.GCTScriptQueryRequest) (*gctrpc.GCTScriptQueryResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GCTScriptQueryResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
@@ -2121,7 +2380,7 @@ func (s *RPCServer) GCTScriptQuery(_ context.Context, r *gctrpc.GCTScriptQueryRe
 
 // GCTScriptExecute execute a script
 func (s *RPCServer) GCTScriptExecute(_ context.Context, r *gctrpc.GCTScriptExecuteRequest) (*gctrpc.GenericResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GenericResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
@@ -2129,7 +2388,7 @@ func (s *RPCServer) GCTScriptExecute(_ context.Context, r *gctrpc.GCTScriptExecu
 		r.Script.Path = gctscript.ScriptPath
 	}
 
-	gctVM := s.GctScriptManager.New()
+	gctVM := s.gctScriptManager.New()
 	if gctVM == nil {
 		return &gctrpc.GenericResponse{Status: MsgStatusError, Data: "unable to create VM instance"}, nil
 	}
@@ -2153,7 +2412,7 @@ func (s *RPCServer) GCTScriptExecute(_ context.Context, r *gctrpc.GCTScriptExecu
 
 // GCTScriptStop terminate a running script
 func (s *RPCServer) GCTScriptStop(_ context.Context, r *gctrpc.GCTScriptStopRequest) (*gctrpc.GenericResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GenericResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
@@ -2175,7 +2434,7 @@ func (s *RPCServer) GCTScriptStop(_ context.Context, r *gctrpc.GCTScriptStopRequ
 
 // GCTScriptUpload upload a new script to ScriptPath
 func (s *RPCServer) GCTScriptUpload(_ context.Context, r *gctrpc.GCTScriptUploadRequest) (*gctrpc.GenericResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GenericResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
@@ -2231,7 +2490,7 @@ func (s *RPCServer) GCTScriptUpload(_ context.Context, r *gctrpc.GCTScriptUpload
 		}
 		var failedFiles []string
 		for x := range files {
-			err = s.GctScriptManager.Validate(files[x])
+			err = s.gctScriptManager.Validate(files[x])
 			if err != nil {
 				failedFiles = append(failedFiles, files[x])
 			}
@@ -2248,7 +2507,7 @@ func (s *RPCServer) GCTScriptUpload(_ context.Context, r *gctrpc.GCTScriptUpload
 			return &gctrpc.GenericResponse{Status: gctscript.ErrScriptFailedValidation, Data: strings.Join(failedFiles, ", ")}, nil
 		}
 	} else {
-		err = s.GctScriptManager.Validate(fPath)
+		err = s.gctScriptManager.Validate(fPath)
 		if err != nil {
 			errRemove := os.Remove(fPath)
 			if errRemove != nil {
@@ -2266,7 +2525,7 @@ func (s *RPCServer) GCTScriptUpload(_ context.Context, r *gctrpc.GCTScriptUpload
 
 // GCTScriptReadScript read a script and return contents
 func (s *RPCServer) GCTScriptReadScript(_ context.Context, r *gctrpc.GCTScriptReadScriptRequest) (*gctrpc.GCTScriptQueryResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GCTScriptQueryResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
@@ -2291,7 +2550,7 @@ func (s *RPCServer) GCTScriptReadScript(_ context.Context, r *gctrpc.GCTScriptRe
 
 // GCTScriptListAll lists all scripts inside the default script path
 func (s *RPCServer) GCTScriptListAll(context.Context, *gctrpc.GCTScriptListAllRequest) (*gctrpc.GCTScriptStatusResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GCTScriptStatusResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
@@ -2317,11 +2576,11 @@ func (s *RPCServer) GCTScriptListAll(context.Context, *gctrpc.GCTScriptListAllRe
 
 // GCTScriptStopAll stops all running scripts
 func (s *RPCServer) GCTScriptStopAll(context.Context, *gctrpc.GCTScriptStopAllRequest) (*gctrpc.GenericResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GenericResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
-	err := s.GctScriptManager.ShutdownAll()
+	err := s.gctScriptManager.ShutdownAll()
 	if err != nil {
 		return &gctrpc.GenericResponse{Status: "error", Data: err.Error()}, nil
 	}
@@ -2334,19 +2593,19 @@ func (s *RPCServer) GCTScriptStopAll(context.Context, *gctrpc.GCTScriptStopAllRe
 
 // GCTScriptAutoLoadToggle adds or removes an entry to the autoload list
 func (s *RPCServer) GCTScriptAutoLoadToggle(_ context.Context, r *gctrpc.GCTScriptAutoLoadRequest) (*gctrpc.GenericResponse, error) {
-	if !s.GctScriptManager.Started() {
+	if !s.gctScriptManager.IsRunning() {
 		return &gctrpc.GenericResponse{Status: gctscript.ErrScriptingDisabled.Error()}, nil
 	}
 
 	if r.Status {
-		err := s.GctScriptManager.Autoload(r.Script, true)
+		err := s.gctScriptManager.Autoload(r.Script, true)
 		if err != nil {
 			return &gctrpc.GenericResponse{Status: "error", Data: err.Error()}, nil
 		}
 		return &gctrpc.GenericResponse{Status: "success", Data: "script " + r.Script + " removed from autoload list"}, nil
 	}
 
-	err := s.GctScriptManager.Autoload(r.Script, false)
+	err := s.gctScriptManager.Autoload(r.Script, false)
 	if err != nil {
 		return &gctrpc.GenericResponse{Status: "error", Data: err.Error()}, nil
 	}
@@ -2355,9 +2614,9 @@ func (s *RPCServer) GCTScriptAutoLoadToggle(_ context.Context, r *gctrpc.GCTScri
 
 // SetExchangeAsset enables or disables an exchanges asset type
 func (s *RPCServer) SetExchangeAsset(_ context.Context, r *gctrpc.SetExchangeAssetRequest) (*gctrpc.GenericResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	exchCfg, err := s.Config.GetExchangeConfig(r.Exchange)
@@ -2393,9 +2652,9 @@ func (s *RPCServer) SetExchangeAsset(_ context.Context, r *gctrpc.SetExchangeAss
 
 // SetAllExchangePairs enables or disables an exchanges pairs
 func (s *RPCServer) SetAllExchangePairs(_ context.Context, r *gctrpc.SetExchangeAllPairsRequest) (*gctrpc.GenericResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	exchCfg, err := s.Config.GetExchangeConfig(r.Exchange)
@@ -2408,7 +2667,7 @@ func (s *RPCServer) SetAllExchangePairs(_ context.Context, r *gctrpc.SetExchange
 		return nil, errExchangeBaseNotFound
 	}
 
-	assets := base.CurrencyPairs.GetAssetTypes()
+	assets := base.CurrencyPairs.GetAssetTypes(false)
 
 	if r.Enable {
 		for i := range assets {
@@ -2441,9 +2700,9 @@ func (s *RPCServer) SetAllExchangePairs(_ context.Context, r *gctrpc.SetExchange
 // will update the available pairs list and remove any assets that are disabled
 // by the exchange
 func (s *RPCServer) UpdateExchangeSupportedPairs(_ context.Context, r *gctrpc.UpdateExchangeSupportedPairsRequest) (*gctrpc.GenericResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	base := exch.GetBase()
@@ -2456,7 +2715,7 @@ func (s *RPCServer) UpdateExchangeSupportedPairs(_ context.Context, r *gctrpc.Up
 			errors.New("cannot auto pair update for exchange, a manual update is needed")
 	}
 
-	err := exch.UpdateTradablePairs(false)
+	err = exch.UpdateTradablePairs(false)
 	if err != nil {
 		return nil, err
 	}
@@ -2472,21 +2731,21 @@ func (s *RPCServer) UpdateExchangeSupportedPairs(_ context.Context, r *gctrpc.Up
 
 // GetExchangeAssets returns the supported asset types
 func (s *RPCServer) GetExchangeAssets(_ context.Context, r *gctrpc.GetExchangeAssetsRequest) (*gctrpc.GetExchangeAssetsResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	return &gctrpc.GetExchangeAssetsResponse{
-		Assets: exch.GetAssetTypes().JoinToString(","),
+		Assets: exch.GetAssetTypes(false).JoinToString(","),
 	}, nil
 }
 
 // WebsocketGetInfo returns websocket connection information
 func (s *RPCServer) WebsocketGetInfo(_ context.Context, r *gctrpc.WebsocketGetInfoRequest) (*gctrpc.WebsocketGetInfoResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	w, err := exch.GetWebsocket()
@@ -2506,9 +2765,9 @@ func (s *RPCServer) WebsocketGetInfo(_ context.Context, r *gctrpc.WebsocketGetIn
 
 // WebsocketSetEnabled enables or disables the websocket client
 func (s *RPCServer) WebsocketSetEnabled(_ context.Context, r *gctrpc.WebsocketSetEnabledRequest) (*gctrpc.GenericResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	w, err := exch.GetWebsocket()
@@ -2541,9 +2800,9 @@ func (s *RPCServer) WebsocketSetEnabled(_ context.Context, r *gctrpc.WebsocketSe
 
 // WebsocketGetSubscriptions returns websocket subscription analysis
 func (s *RPCServer) WebsocketGetSubscriptions(_ context.Context, r *gctrpc.WebsocketGetSubscriptionsRequest) (*gctrpc.WebsocketGetSubscriptionsResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	w, err := exch.GetWebsocket()
@@ -2572,9 +2831,9 @@ func (s *RPCServer) WebsocketGetSubscriptions(_ context.Context, r *gctrpc.Webso
 
 // WebsocketSetProxy sets client websocket connection proxy
 func (s *RPCServer) WebsocketSetProxy(_ context.Context, r *gctrpc.WebsocketSetProxyRequest) (*gctrpc.GenericResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	w, err := exch.GetWebsocket()
@@ -2594,9 +2853,9 @@ func (s *RPCServer) WebsocketSetProxy(_ context.Context, r *gctrpc.WebsocketSetP
 
 // WebsocketSetURL sets exchange websocket client connection URL
 func (s *RPCServer) WebsocketSetURL(_ context.Context, r *gctrpc.WebsocketSetURLRequest) (*gctrpc.GenericResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
 
 	w, err := exch.GetWebsocket()
@@ -2631,23 +2890,30 @@ func (s *RPCServer) GetSavedTrades(_ context.Context, r *gctrpc.GetSavedTradesRe
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, p)
 	if err != nil {
 		return nil, err
 	}
 
-	var UTCStartTime, UTCEndTime time.Time
-	UTCStartTime, err = time.Parse(common.SimpleTimeFormat, r.Start)
+	start, err := time.Parse(common.SimpleTimeFormat, r.Start)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
 	}
-	UTCEndTime, err = time.Parse(common.SimpleTimeFormat, r.End)
+	end, err := time.Parse(common.SimpleTimeFormat, r.End)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return nil, err
 	}
 	var trades []trade.Data
-	trades, err = trade.GetTradesInRange(r.Exchange, r.AssetType, r.Pair.Base, r.Pair.Quote, UTCStartTime, UTCEndTime)
+	trades, err = trade.GetTradesInRange(r.Exchange, r.AssetType, r.Pair.Base, r.Pair.Quote, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -2677,12 +2943,15 @@ func (s *RPCServer) ConvertTradesToCandles(_ context.Context, r *gctrpc.ConvertT
 	if r.End == "" || r.Start == "" || r.Exchange == "" || r.Pair == nil || r.AssetType == "" || r.Pair.String() == "" || r.TimeInterval == 0 {
 		return nil, errInvalidArguments
 	}
-	UTCStartTime, err := time.Parse(common.SimpleTimeFormat, r.Start)
+	start, err := time.Parse(common.SimpleTimeFormat, r.Start)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
 	}
-	var UTCEndTime time.Time
-	UTCEndTime, err = time.Parse(common.SimpleTimeFormat, r.End)
+	end, err := time.Parse(common.SimpleTimeFormat, r.End)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -2697,19 +2966,23 @@ func (s *RPCServer) ConvertTradesToCandles(_ context.Context, r *gctrpc.ConvertT
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, p)
 	if err != nil {
 		return nil, err
 	}
 
 	var trades []trade.Data
-	trades, err = trade.GetTradesInRange(r.Exchange, r.AssetType, r.Pair.Base, r.Pair.Quote, UTCStartTime, UTCEndTime)
+	trades, err = trade.GetTradesInRange(r.Exchange, r.AssetType, r.Pair.Base, r.Pair.Quote, start, end)
 	if err != nil {
 		return nil, err
 	}
 	if len(trades) == 0 {
-		return nil, fmt.Errorf("no trades returned from supplied params")
+		return nil, errNoTrades
 	}
 	interval := kline.Interval(r.TimeInterval)
 	var klineItem kline.Item
@@ -2765,18 +3038,25 @@ func (s *RPCServer) FindMissingSavedCandleIntervals(_ context.Context, r *gctrpc
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.ExchangeName)
+	exch, err := s.GetExchangeByName(r.ExchangeName)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.ExchangeName, exch, a, p)
 	if err != nil {
 		return nil, err
 	}
 
-	var UTCStartTime, UTCEndTime time.Time
-	UTCStartTime, err = time.Parse(common.SimpleTimeFormat, r.Start)
+	start, err := time.Parse(common.SimpleTimeFormat, r.Start)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
 	}
-	UTCEndTime, err = time.Parse(common.SimpleTimeFormat, r.End)
+	end, err := time.Parse(common.SimpleTimeFormat, r.End)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -2785,8 +3065,8 @@ func (s *RPCServer) FindMissingSavedCandleIntervals(_ context.Context, r *gctrpc
 		p,
 		a,
 		kline.Interval(r.Interval),
-		UTCStartTime,
-		UTCEndTime,
+		start,
+		end,
 	)
 	if err != nil {
 		return nil, err
@@ -2802,7 +3082,7 @@ func (s *RPCServer) FindMissingSavedCandleIntervals(_ context.Context, r *gctrpc
 		candleTimes = append(candleTimes, klineItem.Candles[i].Time)
 	}
 	var ranges []timeperiods.TimeRange
-	ranges, err = timeperiods.FindTimeRangesContainingData(UTCStartTime, UTCEndTime, klineItem.Interval.Duration(), candleTimes)
+	ranges, err = timeperiods.FindTimeRangesContainingData(start, end, klineItem.Interval.Duration(), candleTimes)
 	if err != nil {
 		return nil, err
 	}
@@ -2827,8 +3107,8 @@ func (s *RPCServer) FindMissingSavedCandleIntervals(_ context.Context, r *gctrpc
 		resp.Status = fmt.Sprintf("Found %v candles. Missing %v candles in requested timeframe starting %v ending %v",
 			foundCount,
 			len(resp.MissingPeriods),
-			UTCStartTime.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone),
-			UTCEndTime.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone))
+			start.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone),
+			end.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone))
 	}
 
 	return resp, nil
@@ -2850,27 +3130,33 @@ func (s *RPCServer) FindMissingSavedTradeIntervals(_ context.Context, r *gctrpc.
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.ExchangeName)
+	exch, err := s.GetExchangeByName(r.ExchangeName)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.ExchangeName, exch, a, p)
 	if err != nil {
 		return nil, err
 	}
-	var UTCStartTime, UTCEndTime time.Time
-	UTCStartTime, err = time.Parse(common.SimpleTimeFormat, r.Start)
+	start, err := time.Parse(common.SimpleTimeFormat, r.Start)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
+	}
+	end, err := time.Parse(common.SimpleTimeFormat, r.End)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return nil, err
 	}
-	UTCStartTime = UTCStartTime.Truncate(time.Hour)
-
-	UTCEndTime, err = time.Parse(common.SimpleTimeFormat, r.End)
-	if err != nil {
-		return nil, err
-	}
-	UTCEndTime = UTCEndTime.Truncate(time.Hour)
+	start = start.Truncate(time.Hour)
+	end = end.Truncate(time.Hour)
 
 	intervalMap := make(map[time.Time]bool)
-	iterationTime := UTCStartTime
-	for iterationTime.Before(UTCEndTime) {
+	iterationTime := start
+	for iterationTime.Before(end) {
 		intervalMap[iterationTime] = false
 		iterationTime = iterationTime.Add(time.Hour)
 	}
@@ -2881,8 +3167,8 @@ func (s *RPCServer) FindMissingSavedTradeIntervals(_ context.Context, r *gctrpc.
 		r.AssetType,
 		r.Pair.Base,
 		r.Pair.Quote,
-		UTCStartTime,
-		UTCEndTime,
+		start,
+		end,
 	)
 	if err != nil {
 		return nil, err
@@ -2898,7 +3184,7 @@ func (s *RPCServer) FindMissingSavedTradeIntervals(_ context.Context, r *gctrpc.
 		tradeTimes = append(tradeTimes, trades[i].Timestamp)
 	}
 	var ranges []timeperiods.TimeRange
-	ranges, err = timeperiods.FindTimeRangesContainingData(UTCStartTime, UTCEndTime, time.Hour, tradeTimes)
+	ranges, err = timeperiods.FindTimeRangesContainingData(start, end, time.Hour, tradeTimes)
 	if err != nil {
 		return nil, err
 	}
@@ -2923,8 +3209,8 @@ func (s *RPCServer) FindMissingSavedTradeIntervals(_ context.Context, r *gctrpc.
 		resp.Status = fmt.Sprintf("Found %v periods. Missing %v periods between %v and %v",
 			foundCount,
 			len(resp.MissingPeriods),
-			UTCStartTime.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone),
-			UTCEndTime.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone))
+			start.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone),
+			end.In(time.UTC).Format(common.SimpleTimeFormatWithTimezone))
 	}
 
 	return resp, nil
@@ -2932,10 +3218,11 @@ func (s *RPCServer) FindMissingSavedTradeIntervals(_ context.Context, r *gctrpc.
 
 // SetExchangeTradeProcessing allows the setting of exchange trade processing
 func (s *RPCServer) SetExchangeTradeProcessing(_ context.Context, r *gctrpc.SetExchangeTradeProcessingRequest) (*gctrpc.GenericResponse, error) {
-	exch := s.GetExchangeByName(r.Exchange)
-	if exch == nil {
-		return nil, errExchangeNotLoaded
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
 	}
+
 	b := exch.GetBase()
 	b.SetSaveTradeDataStatus(r.Status)
 
@@ -2960,19 +3247,25 @@ func (s *RPCServer) GetHistoricTrades(r *gctrpc.GetSavedTradesRequest, stream gc
 		return err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return err
+	}
+
 	err = checkParams(r.Exchange, exch, a, cp)
 	if err != nil {
 		return err
 	}
 	var trades []trade.Data
-	var UTCStartTime, UTCEndTime time.Time
-	UTCStartTime, err = time.Parse(common.SimpleTimeFormat, r.Start)
+	start, err := time.Parse(common.SimpleTimeFormat, r.Start)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
 	}
-
-	UTCEndTime, err = time.Parse(common.SimpleTimeFormat, r.End)
+	end, err := time.Parse(common.SimpleTimeFormat, r.End)
+	if err != nil {
+		return fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
 	if err != nil {
 		return err
 	}
@@ -2982,7 +3275,7 @@ func (s *RPCServer) GetHistoricTrades(r *gctrpc.GetSavedTradesRequest, stream gc
 		Pair:         r.Pair,
 	}
 
-	for iterateStartTime := UTCStartTime; iterateStartTime.Before(UTCEndTime); iterateStartTime = iterateStartTime.Add(time.Hour) {
+	for iterateStartTime := start; iterateStartTime.Before(end); iterateStartTime = iterateStartTime.Add(time.Hour) {
 		iterateEndTime := iterateStartTime.Add(time.Hour)
 		trades, err = exch.GetHistoricTrades(cp, a, iterateStartTime, iterateEndTime)
 		if err != nil {
@@ -2998,7 +3291,7 @@ func (s *RPCServer) GetHistoricTrades(r *gctrpc.GetSavedTradesRequest, stream gc
 		}
 		for i := range trades {
 			tradeTS := trades[i].Timestamp.In(time.UTC)
-			if tradeTS.After(UTCEndTime) {
+			if tradeTS.After(end) {
 				break
 			}
 			grpcTrades.Trades = append(grpcTrades.Trades, &gctrpc.SavedTrades{
@@ -3010,11 +3303,12 @@ func (s *RPCServer) GetHistoricTrades(r *gctrpc.GetSavedTradesRequest, stream gc
 			})
 		}
 
-		stream.Send(grpcTrades)
+		err = stream.Send(grpcTrades)
+		if err != nil {
+			return err
+		}
 	}
-	stream.Send(resp)
-
-	return nil
+	return stream.Send(resp)
 }
 
 // GetRecentTrades returns trades
@@ -3033,7 +3327,11 @@ func (s *RPCServer) GetRecentTrades(_ context.Context, r *gctrpc.GetSavedTradesR
 		return nil, err
 	}
 
-	exch := s.GetExchangeByName(r.Exchange)
+	exch, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkParams(r.Exchange, exch, a, cp)
 	if err != nil {
 		return nil, err
@@ -3069,7 +3367,7 @@ func checkParams(exchName string, e exchange.IBotExchange, a asset.Item, p curre
 		return fmt.Errorf("%s %w", exchName, errExchangeNotLoaded)
 	}
 	if !e.IsEnabled() {
-		return fmt.Errorf("%s %w", exchName, errExchangeDisabled)
+		return fmt.Errorf("%s %w", exchName, errExchangeNotEnabled)
 	}
 	if a.IsValid() {
 		b := e.GetBase()
@@ -3099,4 +3397,474 @@ func checkParams(exchName string, e exchange.IBotExchange, a asset.Item, p curre
 		return fmt.Errorf("%v %w", p, errCurrencyNotEnabled)
 	}
 	return fmt.Errorf("%v %w", p, errCurrencyPairInvalid)
+}
+
+func parseMultipleEvents(ret []*withdraw.Response) *gctrpc.WithdrawalEventsByExchangeResponse {
+	v := &gctrpc.WithdrawalEventsByExchangeResponse{}
+	for x := range ret {
+		tempEvent := &gctrpc.WithdrawalEventResponse{
+			Id: ret[x].ID.String(),
+			Exchange: &gctrpc.WithdrawlExchangeEvent{
+				Name:   ret[x].Exchange.Name,
+				Id:     ret[x].Exchange.ID,
+				Status: ret[x].Exchange.Status,
+			},
+			Request: &gctrpc.WithdrawalRequestEvent{
+				Currency:    ret[x].RequestDetails.Currency.String(),
+				Description: ret[x].RequestDetails.Description,
+				Amount:      ret[x].RequestDetails.Amount,
+				Type:        int32(ret[x].RequestDetails.Type),
+			},
+		}
+
+		tempEvent.CreatedAt = timestamppb.New(ret[x].CreatedAt)
+		if err := tempEvent.CreatedAt.CheckValid(); err != nil {
+			log.Errorf(log.Global, "withdrawal parseMultipleEvents CreatedAt: %s", err)
+		}
+		tempEvent.UpdatedAt = timestamppb.New(ret[x].UpdatedAt)
+		if err := tempEvent.UpdatedAt.CheckValid(); err != nil {
+			log.Errorf(log.Global, "withdrawal parseMultipleEvents UpdatedAt: %s", err)
+		}
+
+		if ret[x].RequestDetails.Type == withdraw.Crypto {
+			tempEvent.Request.Crypto = new(gctrpc.CryptoWithdrawalEvent)
+			tempEvent.Request.Crypto = &gctrpc.CryptoWithdrawalEvent{
+				Address:    ret[x].RequestDetails.Crypto.Address,
+				AddressTag: ret[x].RequestDetails.Crypto.AddressTag,
+				Fee:        ret[x].RequestDetails.Crypto.FeeAmount,
+			}
+		} else if ret[x].RequestDetails.Type == withdraw.Fiat {
+			if ret[x].RequestDetails.Fiat != (withdraw.FiatRequest{}) {
+				tempEvent.Request.Fiat = new(gctrpc.FiatWithdrawalEvent)
+				tempEvent.Request.Fiat = &gctrpc.FiatWithdrawalEvent{
+					BankName:      ret[x].RequestDetails.Fiat.Bank.BankName,
+					AccountName:   ret[x].RequestDetails.Fiat.Bank.AccountName,
+					AccountNumber: ret[x].RequestDetails.Fiat.Bank.AccountNumber,
+					Bsb:           ret[x].RequestDetails.Fiat.Bank.BSBNumber,
+					Swift:         ret[x].RequestDetails.Fiat.Bank.SWIFTCode,
+					Iban:          ret[x].RequestDetails.Fiat.Bank.IBAN,
+				}
+			}
+		}
+		v.Event = append(v.Event, tempEvent)
+	}
+	return v
+}
+
+func parseWithdrawalsHistory(ret []exchange.WithdrawalHistory, exchName string, limit int) *gctrpc.WithdrawalEventsByExchangeResponse {
+	v := &gctrpc.WithdrawalEventsByExchangeResponse{}
+	for x := range ret {
+		if limit > 0 && x >= limit {
+			return v
+		}
+
+		tempEvent := &gctrpc.WithdrawalEventResponse{
+			Id: ret[x].TransferID,
+			Exchange: &gctrpc.WithdrawlExchangeEvent{
+				Name:   exchName,
+				Status: ret[x].Status,
+			},
+			Request: &gctrpc.WithdrawalRequestEvent{
+				Currency:    ret[x].Currency,
+				Description: ret[x].Description,
+				Amount:      ret[x].Amount,
+			},
+		}
+
+		tempEvent.UpdatedAt = timestamppb.New(ret[x].Timestamp)
+		if err := tempEvent.UpdatedAt.CheckValid(); err != nil {
+			log.Errorf(log.Global, "withdrawal parseWithdrawalsHistory UpdatedAt: %s", err)
+		}
+
+		tempEvent.Request.Crypto = &gctrpc.CryptoWithdrawalEvent{
+			Address: ret[x].CryptoToAddress,
+			Fee:     ret[x].Fee,
+			TxId:    ret[x].CryptoTxID,
+		}
+
+		v.Event = append(v.Event, tempEvent)
+	}
+	return v
+}
+
+func parseSingleEvents(ret *withdraw.Response) *gctrpc.WithdrawalEventsByExchangeResponse {
+	tempEvent := &gctrpc.WithdrawalEventResponse{
+		Id: ret.ID.String(),
+		Exchange: &gctrpc.WithdrawlExchangeEvent{
+			Name:   ret.Exchange.Name,
+			Id:     ret.Exchange.Name,
+			Status: ret.Exchange.Status,
+		},
+		Request: &gctrpc.WithdrawalRequestEvent{
+			Currency:    ret.RequestDetails.Currency.String(),
+			Description: ret.RequestDetails.Description,
+			Amount:      ret.RequestDetails.Amount,
+			Type:        int32(ret.RequestDetails.Type),
+		},
+	}
+	tempEvent.CreatedAt = timestamppb.New(ret.CreatedAt)
+	if err := tempEvent.CreatedAt.CheckValid(); err != nil {
+		log.Errorf(log.Global, "withdrawal parseSingleEvents CreatedAt %s", err)
+	}
+	tempEvent.UpdatedAt = timestamppb.New(ret.UpdatedAt)
+	if err := tempEvent.UpdatedAt.CheckValid(); err != nil {
+		log.Errorf(log.Global, "withdrawal parseSingleEvents UpdatedAt: %s", err)
+	}
+
+	if ret.RequestDetails.Type == withdraw.Crypto {
+		tempEvent.Request.Crypto = new(gctrpc.CryptoWithdrawalEvent)
+		tempEvent.Request.Crypto = &gctrpc.CryptoWithdrawalEvent{
+			Address:    ret.RequestDetails.Crypto.Address,
+			AddressTag: ret.RequestDetails.Crypto.AddressTag,
+			Fee:        ret.RequestDetails.Crypto.FeeAmount,
+		}
+	} else if ret.RequestDetails.Type == withdraw.Fiat {
+		if ret.RequestDetails.Fiat != (withdraw.FiatRequest{}) {
+			tempEvent.Request.Fiat = new(gctrpc.FiatWithdrawalEvent)
+			tempEvent.Request.Fiat = &gctrpc.FiatWithdrawalEvent{
+				BankName:      ret.RequestDetails.Fiat.Bank.BankName,
+				AccountName:   ret.RequestDetails.Fiat.Bank.AccountName,
+				AccountNumber: ret.RequestDetails.Fiat.Bank.AccountNumber,
+				Bsb:           ret.RequestDetails.Fiat.Bank.BSBNumber,
+				Swift:         ret.RequestDetails.Fiat.Bank.SWIFTCode,
+				Iban:          ret.RequestDetails.Fiat.Bank.IBAN,
+			}
+		}
+	}
+
+	return &gctrpc.WithdrawalEventsByExchangeResponse{
+		Event: []*gctrpc.WithdrawalEventResponse{tempEvent},
+	}
+}
+
+// UpsertDataHistoryJob adds or updates a data history job for the data history manager
+// It will upsert the entry in the database and allow for the processing of the job
+func (s *RPCServer) UpsertDataHistoryJob(_ context.Context, r *gctrpc.UpsertDataHistoryJobRequest) (*gctrpc.UpsertDataHistoryJobResponse, error) {
+	if r == nil {
+		return nil, errNilRequestData
+	}
+	a, err := asset.New(r.Asset)
+	if err != nil {
+		return nil, err
+	}
+
+	p := currency.Pair{
+		Delimiter: r.Pair.Delimiter,
+		Base:      currency.NewCode(r.Pair.Base),
+		Quote:     currency.NewCode(r.Pair.Quote),
+	}
+
+	e, err := s.GetExchangeByName(r.Exchange)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkParams(r.Exchange, e, a, p)
+	if err != nil {
+		return nil, err
+	}
+
+	start, err := time.Parse(common.SimpleTimeFormat, r.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
+	}
+	end, err := time.Parse(common.SimpleTimeFormat, r.EndDate)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start, end)
+	if err != nil {
+		return nil, err
+	}
+
+	job := DataHistoryJob{
+		Nickname:                 r.Nickname,
+		Exchange:                 r.Exchange,
+		Asset:                    a,
+		Pair:                     p,
+		StartDate:                start,
+		EndDate:                  end,
+		Interval:                 kline.Interval(r.Interval),
+		RunBatchLimit:            r.BatchSize,
+		RequestSizeLimit:         r.RequestSizeLimit,
+		DataType:                 dataHistoryDataType(r.DataType),
+		MaxRetryAttempts:         r.MaxRetryAttempts,
+		Status:                   dataHistoryStatusActive,
+		OverwriteExistingData:    r.OverwriteExistingData,
+		ConversionInterval:       kline.Interval(r.ConversionInterval),
+		DecimalPlaceComparison:   r.DecimalPlaceComparison,
+		SecondaryExchangeSource:  r.SecondaryExchangeName,
+		IssueTolerancePercentage: r.IssueTolerancePercentage,
+		ReplaceOnIssue:           r.ReplaceOnIssue,
+		PrerequisiteJobNickname:  r.PrerequisiteJobNickname,
+	}
+
+	err = s.dataHistoryManager.UpsertJob(&job, r.InsertOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.dataHistoryManager.GetByNickname(r.Nickname, false)
+	if err != nil {
+		return nil, fmt.Errorf("%s %w", r.Nickname, err)
+	}
+
+	return &gctrpc.UpsertDataHistoryJobResponse{
+		JobId:   result.ID.String(),
+		Message: "successfully upserted job: " + result.Nickname,
+	}, nil
+}
+
+// GetDataHistoryJobDetails returns a data history job's details
+// can request all data history results with r.FullDetails
+func (s *RPCServer) GetDataHistoryJobDetails(_ context.Context, r *gctrpc.GetDataHistoryJobDetailsRequest) (*gctrpc.DataHistoryJob, error) {
+	if r == nil {
+		return nil, errNilRequestData
+	}
+	if r.Id == "" && r.Nickname == "" {
+		return nil, errNicknameIDUnset
+	}
+	if r.Nickname != "" && r.Id != "" {
+		return nil, errOnlyNicknameOrID
+	}
+	var (
+		result     *DataHistoryJob
+		err        error
+		jobResults []*gctrpc.DataHistoryJobResult
+	)
+
+	if r.Id != "" {
+		var id uuid.UUID
+		id, err = uuid.FromString(r.Id)
+		if err != nil {
+			return nil, fmt.Errorf("%s %w", r.Id, err)
+		}
+		result, err = s.dataHistoryManager.GetByID(id)
+		if err != nil {
+			return nil, fmt.Errorf("%s %w", r.Id, err)
+		}
+	} else {
+		result, err = s.dataHistoryManager.GetByNickname(r.Nickname, r.FullDetails)
+		if err != nil {
+			return nil, fmt.Errorf("%s %w", r.Nickname, err)
+		}
+		if r.FullDetails {
+			for _, v := range result.Results {
+				for i := range v {
+					jobResults = append(jobResults, &gctrpc.DataHistoryJobResult{
+						StartDate: v[i].IntervalStartDate.Format(common.SimpleTimeFormat),
+						EndDate:   v[i].IntervalEndDate.Format(common.SimpleTimeFormat),
+						HasData:   v[i].Status == dataHistoryStatusComplete,
+						Message:   v[i].Result,
+						RunDate:   v[i].Date.Format(common.SimpleTimeFormat),
+					})
+				}
+			}
+		}
+	}
+	return &gctrpc.DataHistoryJob{
+		Id:       result.ID.String(),
+		Nickname: result.Nickname,
+		Exchange: result.Exchange,
+		Asset:    result.Asset.String(),
+		Pair: &gctrpc.CurrencyPair{
+			Delimiter: result.Pair.Delimiter,
+			Base:      result.Pair.Base.String(),
+			Quote:     result.Pair.Quote.String(),
+		},
+		StartDate:                result.StartDate.Format(common.SimpleTimeFormat),
+		EndDate:                  result.EndDate.Format(common.SimpleTimeFormat),
+		Interval:                 int64(result.Interval.Duration()),
+		RequestSizeLimit:         result.RequestSizeLimit,
+		MaxRetryAttempts:         result.MaxRetryAttempts,
+		BatchSize:                result.RunBatchLimit,
+		Status:                   result.Status.String(),
+		DataType:                 result.DataType.String(),
+		ConversionInterval:       int64(result.ConversionInterval.Duration()),
+		OverwriteExistingData:    result.OverwriteExistingData,
+		PrerequisiteJobNickname:  result.PrerequisiteJobNickname,
+		DecimalPlaceComparison:   result.DecimalPlaceComparison,
+		SecondaryExchangeName:    result.SecondaryExchangeSource,
+		IssueTolerancePercentage: result.IssueTolerancePercentage,
+		ReplaceOnIssue:           result.ReplaceOnIssue,
+		JobResults:               jobResults,
+	}, nil
+}
+
+// GetActiveDataHistoryJobs returns any active data history job details
+func (s *RPCServer) GetActiveDataHistoryJobs(_ context.Context, _ *gctrpc.GetInfoRequest) (*gctrpc.DataHistoryJobs, error) {
+	jobs, err := s.dataHistoryManager.GetActiveJobs()
+	if err != nil {
+		return nil, err
+	}
+
+	var response []*gctrpc.DataHistoryJob
+	for i := range jobs {
+		response = append(response, &gctrpc.DataHistoryJob{
+			Id:       jobs[i].ID.String(),
+			Nickname: jobs[i].Nickname,
+			Exchange: jobs[i].Exchange,
+			Asset:    jobs[i].Asset.String(),
+			Pair: &gctrpc.CurrencyPair{
+				Delimiter: jobs[i].Pair.Delimiter,
+				Base:      jobs[i].Pair.Base.String(),
+				Quote:     jobs[i].Pair.Quote.String(),
+			},
+			StartDate:                jobs[i].StartDate.Format(common.SimpleTimeFormat),
+			EndDate:                  jobs[i].EndDate.Format(common.SimpleTimeFormat),
+			Interval:                 int64(jobs[i].Interval.Duration()),
+			RequestSizeLimit:         jobs[i].RequestSizeLimit,
+			MaxRetryAttempts:         jobs[i].MaxRetryAttempts,
+			BatchSize:                jobs[i].RunBatchLimit,
+			Status:                   jobs[i].Status.String(),
+			DataType:                 jobs[i].DataType.String(),
+			ConversionInterval:       int64(jobs[i].ConversionInterval.Duration()),
+			OverwriteExistingData:    jobs[i].OverwriteExistingData,
+			PrerequisiteJobNickname:  jobs[i].PrerequisiteJobNickname,
+			DecimalPlaceComparison:   jobs[i].DecimalPlaceComparison,
+			SecondaryExchangeName:    jobs[i].SecondaryExchangeSource,
+			IssueTolerancePercentage: jobs[i].IssueTolerancePercentage,
+			ReplaceOnIssue:           jobs[i].ReplaceOnIssue,
+		})
+	}
+	return &gctrpc.DataHistoryJobs{Results: response}, nil
+}
+
+// GetDataHistoryJobsBetween returns all jobs created between supplied dates
+func (s *RPCServer) GetDataHistoryJobsBetween(_ context.Context, r *gctrpc.GetDataHistoryJobsBetweenRequest) (*gctrpc.DataHistoryJobs, error) {
+	if r == nil {
+		return nil, errNilRequestData
+	}
+	start, err := time.Parse(common.SimpleTimeFormat, r.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse start time %v", errInvalidTimes, err)
+	}
+	end, err := time.Parse(common.SimpleTimeFormat, r.EndDate)
+	if err != nil {
+		return nil, fmt.Errorf("%w cannot parse end time %v", errInvalidTimes, err)
+	}
+	err = common.StartEndTimeCheck(start.Local(), end)
+	if err != nil {
+		return nil, err
+	}
+
+	jobs, err := s.dataHistoryManager.GetAllJobStatusBetween(start, end)
+	if err != nil {
+		return nil, err
+	}
+	var respJobs []*gctrpc.DataHistoryJob
+	for i := range jobs {
+		respJobs = append(respJobs, &gctrpc.DataHistoryJob{
+			Id:       jobs[i].ID.String(),
+			Nickname: jobs[i].Nickname,
+			Exchange: jobs[i].Exchange,
+			Asset:    jobs[i].Asset.String(),
+			Pair: &gctrpc.CurrencyPair{
+				Delimiter: jobs[i].Pair.Delimiter,
+				Base:      jobs[i].Pair.Base.String(),
+				Quote:     jobs[i].Pair.Quote.String(),
+			},
+			StartDate:                jobs[i].StartDate.Format(common.SimpleTimeFormat),
+			EndDate:                  jobs[i].EndDate.Format(common.SimpleTimeFormat),
+			Interval:                 int64(jobs[i].Interval.Duration()),
+			RequestSizeLimit:         jobs[i].RequestSizeLimit,
+			MaxRetryAttempts:         jobs[i].MaxRetryAttempts,
+			BatchSize:                jobs[i].RunBatchLimit,
+			Status:                   jobs[i].Status.String(),
+			DataType:                 jobs[i].DataType.String(),
+			ConversionInterval:       int64(jobs[i].ConversionInterval.Duration()),
+			OverwriteExistingData:    jobs[i].OverwriteExistingData,
+			PrerequisiteJobNickname:  jobs[i].PrerequisiteJobNickname,
+			DecimalPlaceComparison:   jobs[i].DecimalPlaceComparison,
+			SecondaryExchangeName:    jobs[i].SecondaryExchangeSource,
+			IssueTolerancePercentage: jobs[i].IssueTolerancePercentage,
+			ReplaceOnIssue:           jobs[i].ReplaceOnIssue,
+		})
+	}
+	return &gctrpc.DataHistoryJobs{
+		Results: respJobs,
+	}, nil
+}
+
+// GetDataHistoryJobSummary provides a general look at how a data history job is going with the "resultSummaries" property
+func (s *RPCServer) GetDataHistoryJobSummary(_ context.Context, r *gctrpc.GetDataHistoryJobDetailsRequest) (*gctrpc.DataHistoryJob, error) {
+	if r == nil {
+		return nil, errNilRequestData
+	}
+	if r.Nickname == "" {
+		return nil, fmt.Errorf("get job summary %w", errNicknameUnset)
+	}
+	job, err := s.dataHistoryManager.GenerateJobSummary(r.Nickname)
+	if err != nil {
+		return nil, err
+	}
+	return &gctrpc.DataHistoryJob{
+		Nickname: job.Nickname,
+		Exchange: job.Exchange,
+		Asset:    job.Asset.String(),
+		Pair: &gctrpc.CurrencyPair{
+			Delimiter: job.Pair.Delimiter,
+			Base:      job.Pair.Base.String(),
+			Quote:     job.Pair.Quote.String(),
+		},
+		StartDate:               job.StartDate.Format(common.SimpleTimeFormat),
+		EndDate:                 job.EndDate.Format(common.SimpleTimeFormat),
+		Interval:                int64(job.Interval.Duration()),
+		Status:                  job.Status.String(),
+		DataType:                job.DataType.String(),
+		ConversionInterval:      int64(job.ConversionInterval.Duration()),
+		OverwriteExistingData:   job.OverwriteExistingData,
+		PrerequisiteJobNickname: job.PrerequisiteJobNickname,
+		ResultSummaries:         job.ResultRanges,
+	}, nil
+}
+
+// unixTimestamp returns given time in either unix seconds or unix nanoseconds, depending
+// on the remoteControl/gRPC/timeInNanoSeconds boolean configuration.
+func (s *RPCServer) unixTimestamp(x time.Time) int64 {
+	if s.Config.RemoteControl.GRPC.TimeInNanoSeconds {
+		return x.UnixNano()
+	}
+	return x.Unix()
+}
+
+// SetDataHistoryJobStatus sets a data history job's status
+func (s *RPCServer) SetDataHistoryJobStatus(_ context.Context, r *gctrpc.SetDataHistoryJobStatusRequest) (*gctrpc.GenericResponse, error) {
+	if r == nil {
+		return nil, errNilRequestData
+	}
+	if r.Nickname == "" && r.Id == "" {
+		return nil, errNicknameIDUnset
+	}
+	if r.Nickname != "" && r.Id != "" {
+		return nil, errOnlyNicknameOrID
+	}
+	status := "success"
+	err := s.dataHistoryManager.SetJobStatus(r.Nickname, r.Id, dataHistoryStatus(r.Status))
+	if err != nil {
+		log.Error(log.GRPCSys, err)
+		status = "failed"
+	}
+
+	return &gctrpc.GenericResponse{Status: status}, err
+}
+
+// UpdateDataHistoryJobPrerequisite sets or removes a prerequisite job for an existing job
+// if the prerequisite job is "", then the relationship is removed
+func (s *RPCServer) UpdateDataHistoryJobPrerequisite(_ context.Context, r *gctrpc.UpdateDataHistoryJobPrerequisiteRequest) (*gctrpc.GenericResponse, error) {
+	if r == nil {
+		return nil, errNilRequestData
+	}
+	if r.Nickname == "" {
+		return nil, errNicknameUnset
+	}
+	status := "success"
+	err := s.dataHistoryManager.SetJobRelationship(r.PrerequisiteJobNickname, r.Nickname)
+	if err != nil {
+		return nil, err
+	}
+	if r.PrerequisiteJobNickname == "" {
+		return &gctrpc.GenericResponse{Status: status, Data: fmt.Sprintf("Removed prerequisite from job '%v'", r.Nickname)}, nil
+	}
+	return &gctrpc.GenericResponse{Status: status, Data: fmt.Sprintf("Set job '%v' prerequisite job to '%v' and set status to paused", r.Nickname, r.PrerequisiteJobNickname)}, nil
 }

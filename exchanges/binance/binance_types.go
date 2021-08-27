@@ -8,6 +8,8 @@ import (
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 )
 
+const wsRateLimitMilliseconds = 250
+
 // withdrawals status codes description
 const (
 	EmailSent = iota
@@ -203,14 +205,13 @@ type TickerStream struct {
 
 // HistoricalTrade holds recent trade data
 type HistoricalTrade struct {
-	Code         int       `json:"code"`
-	Msg          string    `json:"msg"`
-	ID           int64     `json:"id"`
-	Price        float64   `json:"price,string"`
-	Quantity     float64   `json:"qty,string"`
-	Time         time.Time `json:"time"`
-	IsBuyerMaker bool      `json:"isBuyerMaker"`
-	IsBestMatch  bool      `json:"isBestMatch"`
+	ID            int64     `json:"id"`
+	Price         float64   `json:"price,string"`
+	Quantity      float64   `json:"qty,string"`
+	QuoteQuantity float64   `json:"quoteQty,string"`
+	Time          time.Time `json:"time"`
+	IsBuyerMaker  bool      `json:"isBuyerMaker"`
+	IsBestMatch   bool      `json:"isBestMatch"`
 }
 
 // AggregatedTradeRequestParams holds request params
@@ -405,6 +406,28 @@ type Account struct {
 	CanDeposit       bool      `json:"canDeposit"`
 	UpdateTime       time.Time `json:"updateTime"`
 	Balances         []Balance `json:"balances"`
+}
+
+// MarginAccount holds the margin account data
+type MarginAccount struct {
+	BorrowEnabled       bool                 `json:"borrowEnabled"`
+	MarginLevel         float64              `json:"marginLevel,string"`
+	TotalAssetOfBtc     float64              `json:"totalAssetOfBtc,string"`
+	TotalLiabilityOfBtc float64              `json:"totalLiabilityOfBtc,string"`
+	TotalNetAssetOfBtc  float64              `json:"totalNetAssetOfBtc,string"`
+	TradeEnabled        bool                 `json:"tradeEnabled"`
+	TransferEnabled     bool                 `json:"transferEnabled"`
+	UserAssets          []MarginAccountAsset `json:"userAssets"`
+}
+
+// MarginAccountAsset holds each individual margin account asset
+type MarginAccountAsset struct {
+	Asset    string  `json:"asset"`
+	Borrowed float64 `json:"borrowed,string"`
+	Free     float64 `json:"free,string"`
+	Interest float64 `json:"interest,string"`
+	Locked   float64 `json:"locked,string"`
+	NetAsset float64 `json:"netAsset,string"`
 }
 
 // RequestParamsTimeForceType Time in force
@@ -713,36 +736,38 @@ type wsOrderUpdate struct {
 
 // WsOrderUpdateData defines websocket account order update data
 type WsOrderUpdateData struct {
-	ClientOrderID                     string    `json:"C"`
-	EventTime                         time.Time `json:"E"`
-	IcebergQuantity                   float64   `json:"F,string"`
-	LastExecutedPrice                 float64   `json:"L,string"`
-	CommissionAsset                   string    `json:"N"`
-	OrderCreationTime                 time.Time `json:"O"`
-	StopPrice                         float64   `json:"P,string"`
-	QuoteOrderQuantity                float64   `json:"Q,string"`
-	Side                              string    `json:"S"`
-	TransactionTime                   time.Time `json:"T"`
-	OrderStatus                       string    `json:"X"`
-	LastQuoteAssetTransactedQuantity  float64   `json:"Y,string"`
-	CumulativeQuoteTransactedQuantity float64   `json:"Z,string"`
-	CancelledClientOrderID            string    `json:"c"`
 	EventType                         string    `json:"e"`
+	EventTime                         time.Time `json:"E"`
+	Symbol                            string    `json:"s"`
+	ClientOrderID                     string    `json:"c"`
+	Side                              string    `json:"S"`
+	OrderType                         string    `json:"o"`
 	TimeInForce                       string    `json:"f"`
+	Quantity                          float64   `json:"q,string"`
+	Price                             float64   `json:"p,string"`
+	StopPrice                         float64   `json:"P,string"`
+	IcebergQuantity                   float64   `json:"F,string"`
 	OrderListID                       int64     `json:"g"`
+	CancelledClientOrderID            string    `json:"C"`
+	CurrentExecutionType              string    `json:"x"`
+	OrderStatus                       string    `json:"X"`
+	RejectionReason                   string    `json:"r"`
 	OrderID                           int64     `json:"i"`
 	LastExecutedQuantity              float64   `json:"l,string"`
-	IsMaker                           bool      `json:"m"`
-	Commission                        float64   `json:"n,string"`
-	OrderType                         string    `json:"o"`
-	Price                             float64   `json:"p,string"`
-	Quantity                          float64   `json:"q,string"`
-	RejectionReason                   string    `json:"r"`
-	Symbol                            string    `json:"s"`
-	TradeID                           int64     `json:"t"`
-	IsOnOrderBook                     bool      `json:"w"`
-	CurrentExecutionType              string    `json:"x"`
 	CumulativeFilledQuantity          float64   `json:"z,string"`
+	LastExecutedPrice                 float64   `json:"L,string"`
+	Commission                        float64   `json:"n,string"`
+	CommissionAsset                   string    `json:"N"`
+	TransactionTime                   time.Time `json:"T"`
+	TradeID                           int64     `json:"t"`
+	Ignored                           int64     `json:"I"` // Must be ignored explicitly, otherwise it overwrites 'i'.
+	IsOnOrderBook                     bool      `json:"w"`
+	IsMaker                           bool      `json:"m"`
+	Ignored2                          bool      `json:"M"` // See the comment for "I".
+	OrderCreationTime                 time.Time `json:"O"`
+	CumulativeQuoteTransactedQuantity float64   `json:"Z,string"`
+	LastQuoteAssetTransactedQuantity  float64   `json:"Y,string"`
+	QuoteOrderQuantity                float64   `json:"Q,string"`
 }
 
 type wsListStatus struct {
@@ -805,6 +830,7 @@ type update struct {
 	buffer       chan *WebsocketDepthStream
 	fetchingBook bool
 	initialSync  bool
+	lastUpdateID int64
 }
 
 // job defines a synchonisation job that tells a go routine to fetch an

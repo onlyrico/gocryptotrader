@@ -174,26 +174,26 @@ func (y *Yobit) UpdateTradablePairs(forceUpdate bool) error {
 	return y.UpdatePairs(p, asset.Spot, false, forceUpdate)
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (y *Yobit) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	enabledPairs, err := y.GetEnabledPairs(assetType)
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (y *Yobit) UpdateTickers(a asset.Item) error {
+	enabledPairs, err := y.GetEnabledPairs(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	pairsCollated, err := y.FormatExchangeCurrencies(enabledPairs, assetType)
+	pairsCollated, err := y.FormatExchangeCurrencies(enabledPairs, a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	result, err := y.GetTicker(pairsCollated)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	for i := range enabledPairs {
-		fpair, err := y.FormatExchangeCurrency(enabledPairs[i], assetType)
+		fpair, err := y.FormatExchangeCurrency(enabledPairs[i], a)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		curr := fpair.Lower().String()
 		if _, ok := result[curr]; !ok {
@@ -210,13 +210,22 @@ func (y *Yobit) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Pri
 			QuoteVolume:  resultCurr.VolumeCurrent,
 			Volume:       resultCurr.Vol,
 			ExchangeName: y.Name,
-			AssetType:    assetType,
+			AssetType:    a,
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return ticker.GetTicker(y.Name, p, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (y *Yobit) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := y.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(y.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -413,8 +422,8 @@ func (y *Yobit) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (y *Yobit) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (y *Yobit) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -500,7 +509,6 @@ func (y *Yobit) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	resp, err := y.WithdrawCoinsToAddress(withdrawRequest.Currency.String(),
 		withdrawRequest.Amount,
 		withdrawRequest.Crypto.Address)
@@ -515,13 +523,13 @@ func (y *Yobit) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (y *Yobit) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (y *Yobit) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (y *Yobit) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (y *Yobit) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 

@@ -2,22 +2,21 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/thrasher-corp/gocryptotrader/gctrpc"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v2"
 )
 
-var websocketManagerCommand = cli.Command{
+var websocketManagerCommand = &cli.Command{
 	Name:      "websocket",
 	Usage:     "execute websocket management command",
 	ArgsUsage: "<command> <args>",
-	Subcommands: []cli.Command{
+	Subcommands: []*cli.Command{
 		{
 			Name:  "getinfo",
 			Usage: "returns all exchange websocket information",
 			Flags: []cli.Flag{
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "exchange",
 					Usage: "the exchange to act on",
 				},
@@ -28,7 +27,7 @@ var websocketManagerCommand = cli.Command{
 			Name:  "disable",
 			Usage: "disables websocket connection for an exchange",
 			Flags: []cli.Flag{
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "exchange",
 					Usage: "the exchange to act on",
 				},
@@ -39,13 +38,14 @@ var websocketManagerCommand = cli.Command{
 			Name:  "enable",
 			Usage: "enables websocket connection for an exchange",
 			Flags: []cli.Flag{
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "exchange",
 					Usage: "the exchange to act on",
 				},
-				cli.BoolTFlag{
+				&cli.BoolFlag{
 					Name:   "enable",
 					Hidden: true,
+					Value:  true,
 				},
 			},
 			Action: enableDisableWebsocket,
@@ -54,7 +54,7 @@ var websocketManagerCommand = cli.Command{
 			Name:  "getsubs",
 			Usage: "returns current subscriptions for an exchange",
 			Flags: []cli.Flag{
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "exchange",
 					Usage: "the exchange to act on",
 				},
@@ -65,11 +65,11 @@ var websocketManagerCommand = cli.Command{
 			Name:  "setproxy",
 			Usage: "sets exchange websocket proxy, flushes and reroutes connection",
 			Flags: []cli.Flag{
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "exchange",
 					Usage: "the exchange to act on",
 				},
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "proxy",
 					Usage: "proxy address to change to, if proxy string is not set, this will stop the utilization of the prior set proxy.",
 				},
@@ -80,11 +80,11 @@ var websocketManagerCommand = cli.Command{
 			Name:  "seturl",
 			Usage: "sets exchange websocket endpoint URL and resets the websocket connection",
 			Flags: []cli.Flag{
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "exchange",
 					Usage: "the exchange to act on",
 				},
-				cli.StringFlag{
+				&cli.StringFlag{
 					Name:  "url",
 					Usage: "url string to change to, an empty string will set it back to the packaged defined default",
 				},
@@ -106,10 +106,6 @@ func getwebsocketInfo(c *cli.Context) error {
 		exchange = c.Args().First()
 	}
 
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
-	}
-
 	conn, err := setupClient()
 	if err != nil {
 		return err
@@ -127,7 +123,7 @@ func getwebsocketInfo(c *cli.Context) error {
 }
 
 func enableDisableWebsocket(c *cli.Context) error {
-	enable := c.BoolT("enable")
+	enable := c.Bool("enable")
 	if c.NArg() == 0 && c.NumFlags() == 0 {
 		return cli.ShowSubcommandHelp(c)
 	}
@@ -137,10 +133,6 @@ func enableDisableWebsocket(c *cli.Context) error {
 		exchange = c.String("exchange")
 	} else {
 		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
 	}
 
 	conn, err := setupClient()
@@ -171,10 +163,6 @@ func getSubscriptions(c *cli.Context) error {
 		exchange = c.Args().First()
 	}
 
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
-	}
-
 	conn, err := setupClient()
 	if err != nil {
 		return err
@@ -201,10 +189,6 @@ func setProxy(c *cli.Context) error {
 		exchange = c.String("exchange")
 	} else {
 		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
 	}
 
 	var proxy string
@@ -240,10 +224,6 @@ func setURL(c *cli.Context) error {
 		exchange = c.String("exchange")
 	} else {
 		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
 	}
 
 	var url string

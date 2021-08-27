@@ -202,7 +202,7 @@ Yes means supported, No means not yet implemented and NA means protocol unsuppor
 | Bithumb | Yes  | NA       | NA  |
 | BitMEX | Yes | Yes | NA |
 | Bitstamp | Yes  | Yes       | No  |
-| Bittrex | Yes | No | NA |
+| Bittrex | Yes | Yes | NA |
 | BTCMarkets | Yes | No       | NA  |
 | BTSE | Yes | Yes | NA |
 | COINUT | Yes | Yes | NA |
@@ -217,7 +217,6 @@ Yes means supported, No means not yet implemented and NA means protocol unsuppor
 | ItBit | Yes | NA | No |
 | Kraken | Yes | Yes | NA |
 | Lbank | Yes | No | NA |
-| LakeBTC | Yes | No | NA |
 | LocalBitcoins | Yes | NA | NA |
 | OKCoin International | Yes | Yes | No |
 | OKEX | Yes | Yes | No |
@@ -249,7 +248,6 @@ var Exchanges = []string{
 	"huobi",
 	"itbit",
 	"kraken",
-	"lakebtc",
 	"lbank",
 	"localbitcoins",
 	"okcoin international",
@@ -353,14 +351,28 @@ This will generate a readme file for the exchange which can be found in the new 
 ```go
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (f *FTX) SendHTTPRequest(path string, result interface{}) error {
-	return f.SendPayload(context.Background(), &request.Item{
+	// This is used to generate the *http.Request, used in conjunction with the
+	// generate functionality below. 
+	item := &request.Item{  
 		Method:        http.MethodGet,
 		Path:          path,
 		Result:        result,
 		Verbose:       f.Verbose,
 		HTTPDebugging: f.HTTPDebugging,
 		HTTPRecording: f.HTTPRecording,
-	})
+	}
+
+	// Request function that closes over the above request.Item values, which
+	// executes on every attempt after rate limiting. 
+	generate := func() (*request.Item, error) { return item, nil }
+
+	endpoint := request.Unset // Used in conjunction with the rate limiting 
+	// system defined in the exchange package to slow down outbound requests
+	// depending on each individual endpoint. 
+
+	ctx := context.Background() 
+
+	return f.SendPayload(ctx, endpoint, generate)
 }
 ```
 
@@ -447,38 +459,56 @@ Authenticated request function is created based on the way the exchange document
 ```go
 // SendAuthHTTPRequest sends an authenticated request
 func (f *FTX) SendAuthHTTPRequest(method, path string, data, result interface{}) error {
-	ts := strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
-	var body io.Reader
-	var hmac, payload []byte
-	var err error
-	if data != nil {
-		payload, err = json.Marshal(data)
-		if err != nil {
-			return err
+// A potential example below of closing over authenticated variables which may 
+// be required to regenerate on every request between each attempt after rate
+// limiting. This is for when signatures are based on timestamps/nonces that are 
+// within time receive windows. NOTE: This is not always necessary and the above
+// SendHTTPRequest example will suffice. 
+	generate := func() (*request.Item, error) {
+		ts := strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
+		var body io.Reader
+		var hmac, payload []byte
+		var err error
+		if data != nil {
+			payload, err = json.Marshal(data)
+			if err != nil {
+				return err
+			}
+			body = bytes.NewBuffer(payload)
+			sigPayload := ts + method + "/api" + path + string(payload)
+			hmac = crypto.GetHMAC(crypto.HashSHA256, []byte(sigPayload), []byte(f.API.Credentials.Secret))
+		} else {
+			sigPayload := ts + method + "/api" + path
+			hmac = crypto.GetHMAC(crypto.HashSHA256, []byte(sigPayload), []byte(f.API.Credentials.Secret))
 		}
-		body = bytes.NewBuffer(payload)
-		sigPayload := ts + method + "/api" + path + string(payload)
-		hmac = crypto.GetHMAC(crypto.HashSHA256, []byte(sigPayload), []byte(f.API.Credentials.Secret))
-	} else {
-		sigPayload := ts + method + "/api" + path
-		hmac = crypto.GetHMAC(crypto.HashSHA256, []byte(sigPayload), []byte(f.API.Credentials.Secret))
+		headers := make(map[string]string)
+		headers["FTX-KEY"] = f.API.Credentials.Key
+		headers["FTX-SIGN"] = crypto.HexEncodeToString(hmac)
+		headers["FTX-TS"] = ts
+		headers["Content-Type"] = "application/json"
+
+		// This is used to generate the *http.Request.
+		item := &request.Item{
+			Method:        method,
+			Path:          ftxAPIURL + path,
+			Headers:       headers,
+			Body:          body,
+			Result:        result,
+			AuthRequest:   true,
+			Verbose:       f.Verbose,
+			HTTPDebugging: f.HTTPDebugging,
+			HTTPRecording: f.HTTPRecording,
+		}
+		return item, nil
 	}
-	headers := make(map[string]string)
-	headers["FTX-KEY"] = f.API.Credentials.Key
-	headers["FTX-SIGN"] = crypto.HexEncodeToString(hmac)
-	headers["FTX-TS"] = ts
-	headers["Content-Type"] = "application/json"
-	return f.SendPayload(context.Background(), &request.Item{
-		Method:        method,
-		Path:          ftxAPIURL + path,
-		Headers:       headers,
-		Body:          body,
-		Result:        result,
-		AuthRequest:   true,
-		Verbose:       f.Verbose,
-		HTTPDebugging: f.HTTPDebugging,
-		HTTPRecording: f.HTTPRecording,
-	})
+
+	endpoint := request.Unset // Used in conjunction with the rate limiting 
+	// system defined in the exchange package to slow down outbound requests
+	// depending on each individual endpoint. 
+
+	ctx := context.Background() 
+
+	return f.SendPayload(ctx, endpoint, generate)
 }
 ```
 
@@ -839,6 +869,9 @@ Run gocryptotrader with the following settings enabled in config
 ```
 
 #### Handle websocket data:
+
+- Trades and order events are handled by populating an order.Detail
+  struct by [the following rules](./WS_ORDER_EVENTS.md).
 
 - Function to read data received from websocket:
 

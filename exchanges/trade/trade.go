@@ -29,7 +29,8 @@ func (p *Processor) setup(wg *sync.WaitGroup) {
 
 // AddTradesToBuffer will push trade data onto the buffer
 func AddTradesToBuffer(exchangeName string, data ...Data) error {
-	if database.DB == nil || database.DB.Config == nil || !database.DB.Config.Enabled {
+	cfg := database.DB.GetConfig()
+	if database.DB == nil || cfg == nil || !cfg.Enabled {
 		return nil
 	}
 	if len(data) == 0 {
@@ -128,11 +129,22 @@ func GetTradesInRange(exchangeName, assetType, base, quote string, startDate, en
 	if exchangeName == "" || assetType == "" || base == "" || quote == "" || startDate.IsZero() || endDate.IsZero() {
 		return nil, errors.New("invalid arguments received")
 	}
+	if !database.DB.IsConnected() {
+		return nil, fmt.Errorf("cannot process trades in range %s-%s as %w", startDate, endDate, database.ErrDatabaseNotConnected)
+	}
 	results, err := tradesql.GetInRange(exchangeName, assetType, base, quote, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
 	return SQLDataToTrade(results...)
+}
+
+// HasTradesInRanges Creates an executes an SQL query to verify if a trade exists within a timeframe
+func HasTradesInRanges(exchangeName, assetType, base, quote string, rangeHolder *kline.IntervalRangeHolder) error {
+	if exchangeName == "" || assetType == "" || base == "" || quote == "" {
+		return errors.New("invalid arguments received")
+	}
+	return tradesql.VerifyTradeInIntervals(exchangeName, assetType, base, quote, rangeHolder)
 }
 
 func tradeToSQLData(trades ...Data) ([]tradesql.Data, error) {
@@ -194,7 +206,7 @@ func SQLDataToTrade(dbTrades ...tradesql.Data) (result []Data, err error) {
 // ConvertTradesToCandles turns trade data into kline.Items
 func ConvertTradesToCandles(interval kline.Interval, trades ...Data) (kline.Item, error) {
 	if len(trades) == 0 {
-		return kline.Item{}, errors.New("no trades supplied")
+		return kline.Item{}, ErrNoTradesSupplied
 	}
 	groupedData := groupTradesToInterval(interval, trades...)
 	candles := kline.Item{

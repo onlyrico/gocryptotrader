@@ -12,7 +12,7 @@ import (
 
 // const values for the ticker package
 const (
-	errExchangeNameUnset = "ticker exchange name not set"
+	ErrExchangeNameUnset = "ticker exchange name not set"
 	errPairNotSet        = "ticker currency pair not set"
 	errAssetTypeNotSet   = "ticker asset type not set"
 	errTickerPriceIsNil  = "ticker price is nil"
@@ -28,7 +28,7 @@ type Service struct {
 	Tickers  map[string]map[*currency.Item]map[*currency.Item]map[asset.Item]*Ticker
 	Exchange map[string]uuid.UUID
 	mux      *dispatch.Mux
-	sync.RWMutex
+	sync.Mutex
 }
 
 // Price struct stores the currency pair and pricing information

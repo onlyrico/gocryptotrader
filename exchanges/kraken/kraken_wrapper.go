@@ -330,7 +330,10 @@ func (k *Kraken) Run() {
 // FetchTradablePairs returns a list of the exchanges tradable pairs
 func (k *Kraken) FetchTradablePairs(assetType asset.Item) ([]string, error) {
 	var products []string
-
+	format, err := k.GetPairFormat(assetType, false)
+	if err != nil {
+		return nil, err
+	}
 	switch assetType {
 	case asset.Spot:
 		if !assetTranslator.Seeded() {
@@ -339,10 +342,6 @@ func (k *Kraken) FetchTradablePairs(assetType asset.Item) ([]string, error) {
 			}
 		}
 		pairs, err := k.GetAssetPairs([]string{}, "")
-		if err != nil {
-			return nil, err
-		}
-		format, err := k.GetPairFormat(assetType, false)
 		if err != nil {
 			return nil, err
 		}
@@ -375,7 +374,11 @@ func (k *Kraken) FetchTradablePairs(assetType asset.Item) ([]string, error) {
 		}
 		for x := range pairs.Instruments {
 			if pairs.Instruments[x].Tradable {
-				products = append(products, pairs.Instruments[x].Symbol)
+				curr, err := currency.NewPairFromString(pairs.Instruments[x].Symbol)
+				if err != nil {
+					return nil, err
+				}
+				products = append(products, format.Format(curr))
 			}
 		}
 	}
@@ -385,7 +388,7 @@ func (k *Kraken) FetchTradablePairs(assetType asset.Item) ([]string, error) {
 // UpdateTradablePairs updates the exchanges available pairs and stores
 // them in the exchanges config
 func (k *Kraken) UpdateTradablePairs(forceUpdate bool) error {
-	assets := k.GetAssetTypes()
+	assets := k.GetAssetTypes(false)
 	for x := range assets {
 		pairs, err := k.FetchTradablePairs(assets[x])
 		if err != nil {
@@ -403,28 +406,28 @@ func (k *Kraken) UpdateTradablePairs(forceUpdate bool) error {
 	return nil
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (k *Kraken) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	switch assetType {
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (k *Kraken) UpdateTickers(a asset.Item) error {
+	switch a {
 	case asset.Spot:
-		pairs, err := k.GetEnabledPairs(assetType)
+		pairs, err := k.GetEnabledPairs(a)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		pairsCollated, err := k.FormatExchangeCurrencies(pairs, assetType)
+		pairsCollated, err := k.FormatExchangeCurrencies(pairs, a)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		tickers, err := k.GetTickers(pairsCollated)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		for i := range pairs {
 			for c, t := range tickers {
-				pairFmt, err := k.FormatExchangeCurrency(pairs[i], assetType)
+				pairFmt, err := k.FormatExchangeCurrency(pairs[i], a)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				if !strings.EqualFold(pairFmt.String(), c) {
 					altCurrency := assetTranslator.LookupAltname(c)
@@ -446,21 +449,21 @@ func (k *Kraken) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Pr
 					Open:         t.Open,
 					Pair:         pairs[i],
 					ExchangeName: k.Name,
-					AssetType:    assetType})
+					AssetType:    a})
 				if err != nil {
-					return nil, err
+					return err
 				}
 			}
 		}
 	case asset.Futures:
 		t, err := k.GetFuturesTickers()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for x := range t.Tickers {
 			pair, err := currency.NewPairFromString(t.Tickers[x].Symbol)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			err = ticker.ProcessTicker(&ticker.Price{
 				Last:         t.Tickers[x].Last,
@@ -470,15 +473,24 @@ func (k *Kraken) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Pr
 				Open:         t.Tickers[x].Open24H,
 				Pair:         pair,
 				ExchangeName: k.Name,
-				AssetType:    assetType})
+				AssetType:    a})
 			if err != nil {
-				return nil, err
+				return err
 			}
 		}
 	default:
-		return nil, fmt.Errorf("assetType not supported: %v", assetType)
+		return fmt.Errorf("assetType not supported: %v", a)
 	}
-	return ticker.GetTicker(k.Name, p, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (k *Kraken) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := k.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(k.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -752,8 +764,8 @@ func (k *Kraken) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (k *Kraken) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (k *Kraken) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number

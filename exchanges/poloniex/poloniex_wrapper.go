@@ -270,21 +270,21 @@ func (p *Poloniex) UpdateTradablePairs(forceUpgrade bool) error {
 	return p.UpdatePairs(ps, asset.Spot, false, forceUpgrade)
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (p *Poloniex) UpdateTicker(currencyPair currency.Pair, assetType asset.Item) (*ticker.Price, error) {
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (p *Poloniex) UpdateTickers(a asset.Item) error {
 	tick, err := p.GetTicker()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	enabledPairs, err := p.GetEnabledPairs(assetType)
+	enabledPairs, err := p.GetEnabledPairs(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for i := range enabledPairs {
-		fpair, err := p.FormatExchangeCurrency(enabledPairs[i], assetType)
+		fpair, err := p.FormatExchangeCurrency(enabledPairs[i], a)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		curr := fpair.String()
 		if _, ok := tick[curr]; !ok {
@@ -301,12 +301,21 @@ func (p *Poloniex) UpdateTicker(currencyPair currency.Pair, assetType asset.Item
 			Volume:       tick[curr].BaseVolume,
 			QuoteVolume:  tick[curr].QuoteVolume,
 			ExchangeName: p.Name,
-			AssetType:    assetType})
+			AssetType:    a})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return ticker.GetTicker(p.Name, currencyPair, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (p *Poloniex) UpdateTicker(currencyPair currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := p.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(p.Name, currencyPair, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -440,8 +449,8 @@ func (p *Poloniex) GetRecentTrades(currencyPair currency.Pair, assetType asset.I
 
 // GetHistoricTrades returns historic trade data within the timeframe provided
 func (p *Poloniex) GetHistoricTrades(currencyPair currency.Pair, assetType asset.Item, timestampStart, timestampEnd time.Time) ([]trade.Data, error) {
-	if timestampEnd.After(time.Now()) || timestampEnd.Before(timestampStart) {
-		return nil, fmt.Errorf("invalid time range supplied. Start: %v End %v", timestampStart, timestampEnd)
+	if err := common.StartEndTimeCheck(timestampStart, timestampEnd); err != nil {
+		return nil, fmt.Errorf("invalid time range supplied. Start: %v End %v %w", timestampStart, timestampEnd, err)
 	}
 	var err error
 	currencyPair, err = p.FormatExchangeCurrency(currencyPair, assetType)
@@ -541,14 +550,14 @@ func (p *Poloniex) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (p *Poloniex) ModifyOrder(action *order.Modify) (string, error) {
+func (p *Poloniex) ModifyOrder(action *order.Modify) (order.Modify, error) {
 	if err := action.Validate(); err != nil {
-		return "", err
+		return order.Modify{}, err
 	}
 
 	oID, err := strconv.ParseInt(action.ID, 10, 64)
 	if err != nil {
-		return "", err
+		return order.Modify{}, err
 	}
 
 	resp, err := p.MoveOrder(oID,
@@ -557,10 +566,20 @@ func (p *Poloniex) ModifyOrder(action *order.Modify) (string, error) {
 		action.PostOnly,
 		action.ImmediateOrCancel)
 	if err != nil {
-		return "", err
+		return order.Modify{}, err
 	}
 
-	return strconv.FormatInt(resp.OrderNumber, 10), nil
+	return order.Modify{
+		Exchange:  action.Exchange,
+		AssetType: action.AssetType,
+		Pair:      action.Pair,
+		ID:        strconv.FormatInt(resp.OrderNumber, 10),
+
+		Price:             action.Price,
+		Amount:            action.Amount,
+		PostOnly:          action.PostOnly,
+		ImmediateOrCancel: action.ImmediateOrCancel,
+	}, nil
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -689,7 +708,6 @@ func (p *Poloniex) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	v, err := p.Withdraw(withdrawRequest.Currency.String(), withdrawRequest.Crypto.Address, withdrawRequest.Amount)
 	if err != nil {
 		return nil, err
@@ -701,13 +719,13 @@ func (p *Poloniex) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (p *Poloniex) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (p *Poloniex) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (p *Poloniex) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (p *Poloniex) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 

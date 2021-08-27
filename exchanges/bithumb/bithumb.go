@@ -6,15 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/common/crypto"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
 )
 
@@ -47,6 +51,7 @@ const (
 // Bithumb is the overarching type across the Bithumb package
 type Bithumb struct {
 	exchange.Base
+	obm orderbookManager
 }
 
 // GetTradablePairs returns a list of tradable currencies
@@ -110,18 +115,18 @@ func (b *Bithumb) GetAllTickers() (map[string]Ticker, error) {
 // GetOrderBook returns current orderbook
 //
 // symbol e.g. "btc"
-func (b *Bithumb) GetOrderBook(symbol string) (Orderbook, error) {
+func (b *Bithumb) GetOrderBook(symbol string) (*Orderbook, error) {
 	response := Orderbook{}
 	err := b.SendHTTPRequest(exchange.RestSpot, publicOrderBook+strings.ToUpper(symbol), &response)
 	if err != nil {
-		return response, err
+		return nil, err
 	}
 
 	if response.Status != noError {
-		return response, errors.New(response.Message)
+		return nil, errors.New(response.Message)
 	}
 
-	return response, nil
+	return &response, nil
 }
 
 // GetTransactionHistory returns recent transactions
@@ -262,8 +267,14 @@ func (b *Bithumb) GetLastTransaction() (LastTransactionTicker, error) {
 // (2014-11-28 16:40:01 = 1417160401000)
 func (b *Bithumb) GetOrders(orderID, transactionType, count, after, currency string) (Orders, error) {
 	response := Orders{}
-
 	params := url.Values{}
+
+	if currency == "" {
+		return response, errors.New("order currency is required")
+	}
+
+	params.Set("order_currency", strings.ToUpper(currency))
+
 	if len(orderID) > 0 {
 		params.Set("order_id", orderID)
 	}
@@ -278,10 +289,6 @@ func (b *Bithumb) GetOrders(orderID, transactionType, count, after, currency str
 
 	if len(after) > 0 {
 		params.Set("after", after)
-	}
-
-	if len(currency) > 0 {
-		params.Set("currency", strings.ToUpper(currency))
 	}
 
 	return response,
@@ -308,7 +315,7 @@ func (b *Bithumb) PlaceTrade(orderCurrency, transactionType string, units float6
 
 	params := url.Values{}
 	params.Set("order_currency", strings.ToUpper(orderCurrency))
-	params.Set("Payment_currency", "KRW")
+	params.Set("payment_currency", "KRW")
 	params.Set("type", strings.ToUpper(transactionType))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 	params.Set("price", strconv.FormatInt(price, 10))
@@ -323,7 +330,7 @@ func (b *Bithumb) ModifyTrade(orderID, orderCurrency, transactionType string, un
 
 	params := url.Values{}
 	params.Set("order_currency", strings.ToUpper(orderCurrency))
-	params.Set("Payment_currency", "KRW")
+	params.Set("payment_currency", "KRW")
 	params.Set("type", strings.ToUpper(transactionType))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 	params.Set("price", strconv.FormatInt(price, 10))
@@ -422,11 +429,12 @@ func (b *Bithumb) RequestKRWWithdraw(bank, account string, price int64) (ActionS
 // currency: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
 // (default value: BTC)
 // units: Order quantity
-func (b *Bithumb) MarketBuyOrder(currency string, units float64) (MarketBuy, error) {
+func (b *Bithumb) MarketBuyOrder(pair currency.Pair, units float64) (MarketBuy, error) {
 	response := MarketBuy{}
 
 	params := url.Values{}
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("order_currency", strings.ToUpper(pair.Base.String()))
+	params.Set("payment_currency", strings.ToUpper(pair.Quote.String()))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 
 	return response,
@@ -438,11 +446,12 @@ func (b *Bithumb) MarketBuyOrder(currency string, units float64) (MarketBuy, err
 // currency: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
 // (default value: BTC)
 // units: Order quantity
-func (b *Bithumb) MarketSellOrder(currency string, units float64) (MarketSell, error) {
+func (b *Bithumb) MarketSellOrder(pair currency.Pair, units float64) (MarketSell, error) {
 	response := MarketSell{}
 
 	params := url.Values{}
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("order_currency", strings.ToUpper(pair.Base.String()))
+	params.Set("payment_currency", strings.ToUpper(pair.Quote.String()))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 
 	return response,
@@ -455,20 +464,23 @@ func (b *Bithumb) SendHTTPRequest(ep exchange.URL, path string, result interface
 	if err != nil {
 		return err
 	}
-	return b.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:        http.MethodGet,
 		Path:          endpoint + path,
 		Result:        result,
 		Verbose:       b.Verbose,
 		HTTPDebugging: b.HTTPDebugging,
 		HTTPRecording: b.HTTPRecording,
+	}
+	return b.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
 	})
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request to bithumb
 func (b *Bithumb) SendAuthenticatedHTTPRequest(ep exchange.URL, path string, params url.Values, result interface{}) error {
 	if !b.AllowAuthenticatedRequest() {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, b.Name)
+		return fmt.Errorf("%s %w", b.Name, exchange.ErrAuthenticatedRequestWithoutCredentialsSet)
 	}
 	endpoint, err := b.API.Endpoints.GetURL(ep)
 	if err != nil {
@@ -478,45 +490,47 @@ func (b *Bithumb) SendAuthenticatedHTTPRequest(ep exchange.URL, path string, par
 		params = url.Values{}
 	}
 
-	n := b.Requester.GetNonceMilli().String()
-
-	params.Set("endpoint", path)
-	payload := params.Encode()
-	hmacPayload := path + string('\x00') + payload + string('\x00') + n
-	hmac := crypto.GetHMAC(crypto.HashSHA512,
-		[]byte(hmacPayload),
-		[]byte(b.API.Credentials.Secret))
-	hmacStr := crypto.HexEncodeToString(hmac)
-
-	headers := make(map[string]string)
-	headers["Api-Key"] = b.API.Credentials.Key
-	headers["Api-Sign"] = crypto.Base64Encode([]byte(hmacStr))
-	headers["Api-Nonce"] = n
-	headers["Content-Type"] = "application/x-www-form-urlencoded"
-
 	var intermediary json.RawMessage
+	err = b.SendPayload(context.Background(), request.Auth, func() (*request.Item, error) {
+		// This is time window sensitive
+		tnMS := time.Now().UnixNano() / int64(time.Millisecond)
+		n := strconv.FormatInt(tnMS, 10)
+
+		params.Set("endpoint", path)
+
+		payload := params.Encode()
+		hmacPayload := path + string('\x00') + payload + string('\x00') + n
+		hmac := crypto.GetHMAC(crypto.HashSHA512,
+			[]byte(hmacPayload),
+			[]byte(b.API.Credentials.Secret))
+		hmacStr := crypto.HexEncodeToString(hmac)
+
+		headers := make(map[string]string)
+		headers["Api-Key"] = b.API.Credentials.Key
+		headers["Api-Sign"] = crypto.Base64Encode([]byte(hmacStr))
+		headers["Api-Nonce"] = n
+		headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+		return &request.Item{
+			Method:        http.MethodPost,
+			Path:          endpoint + path,
+			Headers:       headers,
+			Body:          bytes.NewBufferString(payload),
+			Result:        &intermediary,
+			AuthRequest:   true,
+			NonceEnabled:  true,
+			Verbose:       b.Verbose,
+			HTTPDebugging: b.HTTPDebugging,
+			HTTPRecording: b.HTTPRecording}, nil
+	})
+	if err != nil {
+		return err
+	}
 
 	errCapture := struct {
 		Status  string `json:"status"`
 		Message string `json:"message"`
 	}{}
-
-	err = b.SendPayload(context.Background(), &request.Item{
-		Method:        http.MethodPost,
-		Path:          endpoint + path,
-		Headers:       headers,
-		Body:          bytes.NewBufferString(payload),
-		Result:        &intermediary,
-		AuthRequest:   true,
-		NonceEnabled:  true,
-		Verbose:       b.Verbose,
-		HTTPDebugging: b.HTTPDebugging,
-		HTTPRecording: b.HTTPRecording,
-		Endpoint:      request.Auth})
-	if err != nil {
-		return err
-	}
-
 	err = json.Unmarshal(intermediary, &errCapture)
 	if err == nil {
 		if errCapture.Status != "" && errCapture.Status != noError {
@@ -536,7 +550,7 @@ func (b *Bithumb) GetFee(feeBuilder *exchange.FeeBuilder) (float64, error) {
 	switch feeBuilder.FeeType {
 	case exchange.CryptocurrencyTradeFee:
 		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount)
-	case exchange.CyptocurrencyDepositFee:
+	case exchange.CryptocurrencyDepositFee:
 		fee = getDepositFee(feeBuilder.Pair.Base, feeBuilder.Amount)
 	case exchange.CryptocurrencyWithdrawalFee:
 		fee = getWithdrawalFee(feeBuilder.Pair.Base)
@@ -611,4 +625,42 @@ func (b *Bithumb) GetCandleStick(symbol, interval string) (resp OHLCVResponse, e
 	path := publicCandleStick + symbol + "/" + interval
 	err = b.SendHTTPRequest(exchange.RestSpot, path, &resp)
 	return
+}
+
+// FetchExchangeLimits fetches spot order execution limits
+func (b *Bithumb) FetchExchangeLimits() ([]order.MinMaxLevel, error) {
+	ticks, err := b.GetAllTickers()
+	if err != nil {
+		return nil, err
+	}
+
+	var limits []order.MinMaxLevel
+	for code, data := range ticks {
+		c := currency.NewCode(code)
+		cp := currency.NewPair(c, currency.KRW)
+		if err != nil {
+			return nil, err
+		}
+
+		limits = append(limits, order.MinMaxLevel{
+			Pair:      cp,
+			Asset:     asset.Spot,
+			MinAmount: getAmountMinimum(data.ClosingPrice),
+		})
+	}
+	return limits, nil
+}
+
+// getAmountMinimum derives the minimum amount based on current price. This
+// keeps amount in line with front end, rounded to 4 decimal places. As
+// transaction policy:
+// https://en.bithumb.com/customer_support/info_guide?seq=537&categorySeq=302
+// Seems to not be inline with front end limits.
+func getAmountMinimum(unitPrice float64) float64 {
+	if unitPrice <= 0 {
+		return 0
+	}
+	ratio := 500 / unitPrice
+	pow := math.Pow(10, float64(4))
+	return math.Ceil(ratio*pow) / pow // Round up our units
 }

@@ -166,11 +166,11 @@ func (e *ExchangeRates) GetTimeSeriesRates(startDate, endDate time.Time, baseCur
 	}
 
 	if startDate.IsZero() || endDate.IsZero() {
-		return nil, errors.New("startDate and endDate params must be set")
+		return nil, errStartEndDatesInvalid
 	}
 
 	if startDate.After(endDate) {
-		return nil, errors.New("startDate must be before endDate")
+		return nil, errStartAfterEnd
 	}
 
 	v := url.Values{}
@@ -197,11 +197,11 @@ func (e *ExchangeRates) GetFluctuations(startDate, endDate time.Time, baseCurren
 	}
 
 	if startDate.IsZero() || endDate.IsZero() {
-		return nil, errors.New("startDate and endDate must be set")
+		return nil, errStartEndDatesInvalid
 	}
 
 	if startDate.After(endDate) {
-		return nil, errors.New("startDate must be before endDate")
+		return nil, errStartAfterEnd
 	}
 
 	v := url.Values{}
@@ -261,11 +261,14 @@ func (e *ExchangeRates) SendHTTPRequest(endPoint string, values url.Values, resu
 		protocolScheme = "http://"
 	}
 	path := common.EncodeURLValues(protocolScheme+exchangeRatesAPI+"/v1/"+endPoint, values)
-	err := e.Requester.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:  http.MethodGet,
 		Path:    path,
 		Result:  result,
 		Verbose: e.Verbose,
+	}
+	err := e.Requester.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
 	})
 	if err != nil {
 		return fmt.Errorf("exchangeRatesAPI: SendHTTPRequest error %s with path %s",

@@ -1,6 +1,8 @@
 package binance
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
@@ -30,6 +32,7 @@ const (
 // Binance Spot rate limits
 const (
 	spotDefaultRate request.EndpointLimit = iota
+	spotExchangeInfo
 	spotHistoricalTradesRate
 	spotOrderbookDepth500Rate
 	spotOrderbookDepth1000Rate
@@ -38,8 +41,10 @@ const (
 	spotPriceChangeAllRate
 	spotSymbolPriceAllRate
 	spotOpenOrdersAllRate
+	spotOpenOrdersSpecificRate
 	spotOrderRate
-	spotOrdersAllRate
+	spotOrderQueryRate
+	spotAllOrdersRate
 	spotAccountInformationRate
 	uFuturesDefaultRate
 	uFuturesHistoricalTradesRate
@@ -100,7 +105,7 @@ type RateLimit struct {
 }
 
 // Limit executes rate limiting functionality for Binance
-func (r *RateLimit) Limit(f request.EndpointLimit) error {
+func (r *RateLimit) Limit(ctx context.Context, f request.EndpointLimit) error {
 	var limiter *rate.Limiter
 	var tokens int
 	switch f {
@@ -110,10 +115,11 @@ func (r *RateLimit) Limit(f request.EndpointLimit) error {
 		spotSymbolPriceAllRate:
 		limiter, tokens = r.SpotRate, 2
 	case spotHistoricalTradesRate,
-		spotAccountInformationRate,
 		spotOrderbookDepth500Rate:
 		limiter, tokens = r.SpotRate, 5
-	case spotOrderbookDepth1000Rate:
+	case spotOrderbookDepth1000Rate,
+		spotAccountInformationRate,
+		spotExchangeInfo:
 		limiter, tokens = r.SpotRate, 10
 	case spotPriceChangeAllRate:
 		limiter, tokens = r.SpotRate, 40
@@ -121,8 +127,12 @@ func (r *RateLimit) Limit(f request.EndpointLimit) error {
 		limiter, tokens = r.SpotRate, 50
 	case spotOrderRate:
 		limiter, tokens = r.SpotOrdersRate, 1
-	case spotOrdersAllRate:
-		limiter, tokens = r.SpotOrdersRate, 5
+	case spotOrderQueryRate:
+		limiter, tokens = r.SpotOrdersRate, 2
+	case spotOpenOrdersSpecificRate:
+		limiter, tokens = r.SpotOrdersRate, 3
+	case spotAllOrdersRate:
+		limiter, tokens = r.SpotOrdersRate, 10
 	case spotOpenOrdersAllRate:
 		limiter, tokens = r.SpotOrdersRate, 40
 	case uFuturesDefaultRate,
@@ -206,11 +216,25 @@ func (r *RateLimit) Limit(f request.EndpointLimit) error {
 	}
 
 	var finalDelay time.Duration
+	var reserves = make([]*rate.Reservation, tokens)
 	for i := 0; i < tokens; i++ {
 		// Consume tokens 1 at a time as this avoids needing burst capacity in the limiter,
 		// which would otherwise allow the rate limit to be exceeded over short periods
-		finalDelay = limiter.Reserve().Delay()
+		reserves[i] = limiter.Reserve()
+		finalDelay = reserves[i].Delay()
 	}
+
+	if dl, ok := ctx.Deadline(); ok && dl.Before(time.Now().Add(finalDelay)) {
+		// Cancel all potential reservations to free up rate limiter if deadline
+		// is exceeded.
+		for x := range reserves {
+			reserves[x].Cancel()
+		}
+		return fmt.Errorf("rate limit delay of %s will exceed deadline: %w",
+			finalDelay,
+			context.DeadlineExceeded)
+	}
+
 	time.Sleep(finalDelay)
 	return nil
 }
@@ -240,7 +264,7 @@ func openOrdersLimit(symbol string) request.EndpointLimit {
 		return spotOpenOrdersAllRate
 	}
 
-	return spotOrderRate
+	return spotOpenOrdersSpecificRate
 }
 
 func orderbookLimit(depth int) request.EndpointLimit {

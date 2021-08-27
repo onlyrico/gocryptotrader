@@ -79,8 +79,7 @@ func (s *Service) Update(b *Base) error {
 		book.AssignOptions(b)
 		m3[b.Pair.Quote.Item] = book
 	}
-	book.SetLastUpdate(b.LastUpdated, b.LastUpdateID, true)
-	book.LoadSnapshot(b.Bids, b.Asks)
+	book.LoadSnapshot(b.Bids, b.Asks, b.LastUpdateID, b.LastUpdated, true)
 	s.Unlock()
 	return s.Mux.Publish([]uuid.UUID{m1.ID}, book.Retrieve())
 }
@@ -124,6 +123,9 @@ func (s *Service) DeployDepth(exchange string, p currency.Pair, a asset.Item) (*
 	book, ok := m3[p.Quote.Item]
 	if !ok {
 		book = newDepth(m1.ID)
+		book.exchange = exchange
+		book.pair = p
+		book.asset = a
 		m3[p.Quote.Item] = book
 	}
 	return book, nil
@@ -225,7 +227,7 @@ func (b *Base) Verify() error {
 	}
 
 	// Checking for both ask and bid lengths being zero has been removed and
-	// a warning has been put in place some exchanges e.g. LakeBTC return zero
+	// a warning has been put in place for some exchanges that return zero
 	// level books. In the event that there is a massive liquidity change where
 	// a book dries up, this will still update so we do not traverse potential
 	// incorrect old data.

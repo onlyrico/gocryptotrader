@@ -17,7 +17,6 @@ import (
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
-	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
 const (
@@ -263,7 +262,7 @@ func (c *COINUT) GetOpenPositions(instrumentID int) ([]OpenPosition, error) {
 // SendHTTPRequest sends either an authenticated or unauthenticated HTTP request
 func (c *COINUT) SendHTTPRequest(ep exchange.URL, apiRequest string, params map[string]interface{}, authenticated bool, result interface{}) (err error) {
 	if !c.API.AuthenticatedSupport && authenticated {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, c.Name)
+		return fmt.Errorf("%s %w", c.Name, exchange.ErrAuthenticatedRequestWithoutCredentialsSet)
 	}
 
 	endpoint, err := c.API.Endpoints.GetURL(ep)
@@ -275,38 +274,37 @@ func (c *COINUT) SendHTTPRequest(ep exchange.URL, apiRequest string, params map[
 		params = map[string]interface{}{}
 	}
 
-	params["nonce"] = getNonce()
-	params["request"] = apiRequest
-
-	payload, err := json.Marshal(params)
-	if err != nil {
-		return errors.New("sendHTTPRequest: Unable to JSON request")
-	}
-
-	if c.Verbose {
-		log.Debugf(log.ExchangeSys, "Request JSON: %s", payload)
-	}
-
-	headers := make(map[string]string)
-	if authenticated {
-		headers["X-USER"] = c.API.Credentials.ClientID
-		hmac := crypto.GetHMAC(crypto.HashSHA256, payload, []byte(c.API.Credentials.Key))
-		headers["X-SIGNATURE"] = crypto.HexEncodeToString(hmac)
-	}
-	headers["Content-Type"] = "application/json"
-
 	var rawMsg json.RawMessage
-	err = c.SendPayload(context.Background(), &request.Item{
-		Method:        http.MethodPost,
-		Path:          endpoint,
-		Headers:       headers,
-		Body:          bytes.NewBuffer(payload),
-		Result:        &rawMsg,
-		AuthRequest:   authenticated,
-		NonceEnabled:  true,
-		Verbose:       c.Verbose,
-		HTTPDebugging: c.HTTPDebugging,
-		HTTPRecording: c.HTTPRecording,
+	err = c.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		params["nonce"] = getNonce()
+		params["request"] = apiRequest
+
+		var payload []byte
+		payload, err = json.Marshal(params)
+		if err != nil {
+			return nil, err
+		}
+
+		headers := make(map[string]string)
+		if authenticated {
+			headers["X-USER"] = c.API.Credentials.ClientID
+			hmac := crypto.GetHMAC(crypto.HashSHA256, payload, []byte(c.API.Credentials.Key))
+			headers["X-SIGNATURE"] = crypto.HexEncodeToString(hmac)
+		}
+		headers["Content-Type"] = "application/json"
+
+		return &request.Item{
+			Method:        http.MethodPost,
+			Path:          endpoint,
+			Headers:       headers,
+			Body:          bytes.NewBuffer(payload),
+			Result:        &rawMsg,
+			AuthRequest:   authenticated,
+			NonceEnabled:  true,
+			Verbose:       c.Verbose,
+			HTTPDebugging: c.HTTPDebugging,
+			HTTPRecording: c.HTTPRecording,
+		}, nil
 	})
 	if err != nil {
 		return err

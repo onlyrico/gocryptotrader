@@ -287,27 +287,27 @@ func (b *BTCMarkets) UpdateTradablePairs(forceUpdate bool) error {
 	return b.UpdatePairs(p, asset.Spot, false, forceUpdate)
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (b *BTCMarkets) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	allPairs, err := b.GetEnabledPairs(assetType)
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (b *BTCMarkets) UpdateTickers(a asset.Item) error {
+	allPairs, err := b.GetEnabledPairs(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	tickers, err := b.GetTickers(allPairs)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if len(allPairs) != len(tickers) {
-		return nil, errors.New("enabled pairs differ from returned tickers")
+		return errors.New("enabled pairs differ from returned tickers")
 	}
 
 	for x := range tickers {
 		var newP currency.Pair
 		newP, err = currency.NewPairFromString(tickers[x].MarketID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		err = ticker.ProcessTicker(&ticker.Price{
@@ -320,13 +320,22 @@ func (b *BTCMarkets) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticke
 			Volume:       tickers[x].Volume,
 			LastUpdated:  time.Now(),
 			ExchangeName: b.Name,
-			AssetType:    assetType,
+			AssetType:    a,
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return ticker.GetTicker(b.Name, p, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (b *BTCMarkets) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := b.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(b.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -530,8 +539,8 @@ func (b *BTCMarkets) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) 
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (b *BTCMarkets) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (b *BTCMarkets) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -673,7 +682,6 @@ func (b *BTCMarkets) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*with
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	if withdrawRequest.Currency != currency.AUD {
 		return nil, errors.New("only aud is supported for withdrawals")
 	}
@@ -695,7 +703,7 @@ func (b *BTCMarkets) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*with
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (b *BTCMarkets) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (b *BTCMarkets) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
@@ -977,7 +985,10 @@ func (b *BTCMarkets) GetHistoricCandlesExtended(p currency.Pair, a asset.Item, s
 		Interval: interval,
 	}
 
-	dates := kline.CalculateCandleDateRanges(start, end, interval, b.Features.Enabled.Kline.ResultLimit)
+	dates, err := kline.CalculateCandleDateRanges(start, end, interval, b.Features.Enabled.Kline.ResultLimit)
+	if err != nil {
+		return kline.Item{}, err
+	}
 	for x := range dates.Ranges {
 		var candles CandleResponse
 		candles, err = b.GetMarketCandles(fPair.String(),
@@ -1019,9 +1030,10 @@ func (b *BTCMarkets) GetHistoricCandlesExtended(p currency.Pair, a asset.Item, s
 		}
 	}
 
-	err = dates.VerifyResultsHaveData(ret.Candles)
-	if err != nil {
-		log.Warnf(log.ExchangeSys, "%s - %s", b.Name, err)
+	dates.SetHasDataFromCandles(ret.Candles)
+	summary := dates.DataSummary(false)
+	if len(summary) > 0 {
+		log.Warnf(log.ExchangeSys, "%v - %v", b.Name, summary)
 	}
 	ret.RemoveDuplicates()
 	ret.RemoveOutsideRange(start, end)

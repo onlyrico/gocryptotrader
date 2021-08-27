@@ -139,23 +139,23 @@ func (b *Bitflyer) Run() {
 }
 
 // FetchTradablePairs returns a list of the exchanges tradable pairs
-func (b *Bitflyer) FetchTradablePairs(assetType asset.Item) ([]string, error) {
+func (b *Bitflyer) FetchTradablePairs(a asset.Item) ([]string, error) {
 	pairs, err := b.GetMarkets()
 	if err != nil {
 		return nil, err
 	}
 
-	format, err := b.GetPairFormat(assetType, false)
+	format, err := b.GetPairFormat(a, false)
 	if err != nil {
 		return nil, err
 	}
 
 	var products []string
 	for i := range pairs {
-		if pairs[i].Alias != "" && assetType == asset.Futures {
+		if pairs[i].Alias != "" && a == asset.Futures {
 			products = append(products, pairs[i].Alias)
 		} else if pairs[i].Alias == "" &&
-			assetType == asset.Spot &&
+			a == asset.Spot &&
 			strings.Contains(pairs[i].ProductCode,
 				format.Delimiter) {
 			products = append(products, pairs[i].ProductCode)
@@ -167,7 +167,7 @@ func (b *Bitflyer) FetchTradablePairs(assetType asset.Item) ([]string, error) {
 // UpdateTradablePairs updates the exchanges available pairs and stores
 // them in the exchanges config
 func (b *Bitflyer) UpdateTradablePairs(forceUpdate bool) error {
-	assets := b.CurrencyPairs.GetAssetTypes()
+	assets := b.CurrencyPairs.GetAssetTypes(false)
 	for x := range assets {
 		pairs, err := b.FetchTradablePairs(assets[x])
 		if err != nil {
@@ -187,9 +187,14 @@ func (b *Bitflyer) UpdateTradablePairs(forceUpdate bool) error {
 	return nil
 }
 
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (b *Bitflyer) UpdateTickers(a asset.Item) error {
+	return common.ErrFunctionNotSupported
+}
+
 // UpdateTicker updates and returns the ticker for a currency pair
-func (b *Bitflyer) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	fPair, err := b.FormatExchangeCurrency(p, assetType)
+func (b *Bitflyer) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	fPair, err := b.FormatExchangeCurrency(p, a)
 	if err != nil {
 		return nil, err
 	}
@@ -206,12 +211,12 @@ func (b *Bitflyer) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.
 		Last:         tickerNew.Last,
 		Volume:       tickerNew.Volume,
 		ExchangeName: b.Name,
-		AssetType:    assetType})
+		AssetType:    a})
 	if err != nil {
 		return nil, err
 	}
 
-	return ticker.GetTicker(b.Name, fPair, assetType)
+	return ticker.GetTicker(b.Name, fPair, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -373,8 +378,8 @@ func (b *Bitflyer) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (b *Bitflyer) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (b *Bitflyer) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -383,7 +388,7 @@ func (b *Bitflyer) CancelOrder(_ *order.Cancel) error {
 }
 
 // CancelBatchOrders cancels an orders by their corresponding ID numbers
-func (b *Bitflyer) CancelBatchOrders(o []order.Cancel) (order.CancelBatchResponse, error) {
+func (b *Bitflyer) CancelBatchOrders(_ []order.Cancel) (order.CancelBatchResponse, error) {
 	return order.CancelBatchResponse{}, common.ErrNotYetImplemented
 }
 
@@ -395,42 +400,42 @@ func (b *Bitflyer) CancelAllOrders(_ *order.Cancel) (order.CancelAllResponse, er
 }
 
 // GetOrderInfo returns order information based on order ID
-func (b *Bitflyer) GetOrderInfo(orderID string, pair currency.Pair, assetType asset.Item) (order.Detail, error) {
+func (b *Bitflyer) GetOrderInfo(_ string, _ currency.Pair, _ asset.Item) (order.Detail, error) {
 	var orderDetail order.Detail
 	return orderDetail, common.ErrNotYetImplemented
 }
 
 // GetDepositAddress returns a deposit address for a specified currency
-func (b *Bitflyer) GetDepositAddress(cryptocurrency currency.Code, accountID string) (string, error) {
+func (b *Bitflyer) GetDepositAddress(_ currency.Code, _ string) (string, error) {
 	return "", common.ErrNotYetImplemented
 }
 
 // WithdrawCryptocurrencyFunds returns a withdrawal ID when a withdrawal is
 // submitted
-func (b *Bitflyer) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (b *Bitflyer) WithdrawCryptocurrencyFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrNotYetImplemented
 }
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (b *Bitflyer) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (b *Bitflyer) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrNotYetImplemented
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (b *Bitflyer) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (b *Bitflyer) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrNotYetImplemented
 }
 
 // GetActiveOrders retrieves any orders that are active/open
-func (b *Bitflyer) GetActiveOrders(getOrdersRequest *order.GetOrdersRequest) ([]order.Detail, error) {
+func (b *Bitflyer) GetActiveOrders(_ *order.GetOrdersRequest) ([]order.Detail, error) {
 	return nil, common.ErrNotYetImplemented
 }
 
 // GetOrderHistory retrieves account order information
 // Can Limit response to specific order status
-func (b *Bitflyer) GetOrderHistory(getOrdersRequest *order.GetOrdersRequest) ([]order.Detail, error) {
+func (b *Bitflyer) GetOrderHistory(_ *order.GetOrdersRequest) ([]order.Detail, error) {
 	return nil, common.ErrNotYetImplemented
 }
 

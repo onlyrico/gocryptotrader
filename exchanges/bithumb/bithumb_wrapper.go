@@ -20,11 +20,16 @@ import (
 	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/protocol"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/stream"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/ticker"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/trade"
 	"github.com/thrasher-corp/gocryptotrader/log"
 	"github.com/thrasher-corp/gocryptotrader/portfolio/withdraw"
 )
+
+const wsRateLimitMillisecond = 1000
+
+var errNotEnoughPairs = errors.New("at least one currency is required to fetch order history")
 
 // GetDefaultConfig returns a default exchange config
 func (b *Bithumb) GetDefaultConfig() (*config.ExchangeConfig, error) {
@@ -90,6 +95,13 @@ func (b *Bithumb) SetDefaults() {
 				CryptoWithdrawalFee: true,
 				KlineFetching:       true,
 			},
+			Websocket: true,
+			WebsocketCapabilities: protocol.Features{
+				TradeFetching:     true,
+				TickerFetching:    true,
+				OrderbookFetching: true,
+				Subscribe:         true,
+			},
 			WithdrawPermissions: exchange.AutoWithdrawCrypto |
 				exchange.AutoWithdrawFiat,
 			Kline: kline.ExchangeCapabilitiesSupported{
@@ -118,11 +130,16 @@ func (b *Bithumb) SetDefaults() {
 		request.WithLimiter(SetRateLimit()))
 	b.API.Endpoints = b.NewEndpoints()
 	err = b.API.Endpoints.SetDefaultEndpoints(map[exchange.URL]string{
-		exchange.RestSpot: apiURL,
+		exchange.RestSpot:      apiURL,
+		exchange.WebsocketSpot: wsEndpoint,
 	})
 	if err != nil {
 		log.Errorln(log.ExchangeSys, err)
 	}
+
+	b.Websocket = stream.New()
+	b.WebsocketResponseMaxLimit = exchange.DefaultWebsocketResponseMaxLimit
+	b.WebsocketResponseCheckTimeout = exchange.DefaultWebsocketResponseCheckTimeout
 }
 
 // Setup takes in the supplied exchange configuration details and sets params
@@ -131,7 +148,44 @@ func (b *Bithumb) Setup(exch *config.ExchangeConfig) error {
 		b.SetEnabled(false)
 		return nil
 	}
-	return b.SetupDefaults(exch)
+	err := b.SetupDefaults(exch)
+	if err != nil {
+		return err
+	}
+
+	location, err = time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		return err
+	}
+
+	ePoint, err := b.API.Endpoints.GetURL(exchange.WebsocketSpot)
+	if err != nil {
+		return err
+	}
+	err = b.Websocket.Setup(&stream.WebsocketSetup{
+		Enabled:                          exch.Features.Enabled.Websocket,
+		Verbose:                          exch.Verbose,
+		AuthenticatedWebsocketAPISupport: exch.API.AuthenticatedWebsocketSupport,
+		WebsocketTimeout:                 exch.WebsocketTrafficTimeout,
+		DefaultURL:                       wsEndpoint,
+		ExchangeName:                     exch.Name,
+		RunningURL:                       ePoint,
+		Connector:                        b.WsConnect,
+		Subscriber:                       b.Subscribe,
+		GenerateSubscriptions:            b.GenerateSubscriptions,
+		Features:                         &b.Features.Supports.WebsocketCapabilities,
+		OrderbookBufferLimit:             exch.OrderbookConfig.WebsocketBufferLimit,
+		BufferEnabled:                    exch.OrderbookConfig.WebsocketBufferEnabled,
+	})
+	if err != nil {
+		return err
+	}
+
+	return b.Websocket.SetupNewConnection(stream.ConnectionSetup{
+		ResponseCheckTimeout: exch.WebsocketResponseCheckTimeout,
+		ResponseMaxLimit:     exch.WebsocketResponseMaxLimit,
+		RateLimit:            wsRateLimitMillisecond,
+	})
 }
 
 // Start starts the Bithumb go routine
@@ -149,11 +203,19 @@ func (b *Bithumb) Run() {
 		b.PrintEnabledPairs()
 	}
 
+	err := b.UpdateOrderExecutionLimits("")
+	if err != nil {
+		log.Errorf(log.ExchangeSys,
+			"%s failed to set exchange order execution limits. Err: %v",
+			b.Name,
+			err)
+	}
+
 	if !b.GetEnabledFeatures().AutoPairUpdates {
 		return
 	}
 
-	err := b.UpdateTradablePairs(false)
+	err = b.UpdateTradablePairs(false)
 	if err != nil {
 		log.Errorf(log.ExchangeSys, "%s failed to update tradable pairs. Err: %s", b.Name, err)
 	}
@@ -189,24 +251,23 @@ func (b *Bithumb) UpdateTradablePairs(forceUpdate bool) error {
 	return b.UpdatePairs(p, asset.Spot, false, forceUpdate)
 }
 
-// UpdateTicker updates and returns the ticker for a currency pair
-func (b *Bithumb) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (b *Bithumb) UpdateTickers(a asset.Item) error {
 	tickers, err := b.GetAllTickers()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	pairs, err := b.GetEnabledPairs(assetType)
+	pairs, err := b.GetEnabledPairs(a)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	for i := range pairs {
 		curr := pairs[i].Base.String()
 		t, ok := tickers[curr]
 		if !ok {
-			return nil,
-				fmt.Errorf("enabled pair %s [%s] not found in returned ticker map %v",
-					pairs[i], pairs, tickers)
+			return fmt.Errorf("enabled pair %s [%s] not found in returned ticker map %v",
+				pairs[i], pairs, tickers)
 		}
 		err = ticker.ProcessTicker(&ticker.Price{
 			High:         t.MaxPrice,
@@ -216,20 +277,29 @@ func (b *Bithumb) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.P
 			Close:        t.ClosingPrice,
 			Pair:         pairs[i],
 			ExchangeName: b.Name,
-			AssetType:    assetType,
+			AssetType:    a,
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return ticker.GetTicker(b.Name, p, assetType)
+	return nil
+}
+
+// UpdateTicker updates and returns the ticker for a currency pair
+func (b *Bithumb) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	err := b.UpdateTickers(a)
+	if err != nil {
+		return nil, err
+	}
+	return ticker.GetTicker(b.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
-func (b *Bithumb) FetchTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	tickerNew, err := ticker.GetTicker(b.Name, p, assetType)
+func (b *Bithumb) FetchTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	tickerNew, err := ticker.GetTicker(b.Name, p, a)
 	if err != nil {
-		return b.UpdateTicker(p, assetType)
+		return b.UpdateTicker(p, a)
 	}
 	return tickerNew, nil
 }
@@ -307,6 +377,7 @@ func (b *Bithumb) UpdateAccountInfo(assetType asset.Item) (account.Holdings, err
 
 	info.Accounts = append(info.Accounts, account.SubAccount{
 		Currencies: exchangeBalances,
+		AssetType:  assetType,
 	})
 
 	info.Exchange = b.Name
@@ -403,14 +474,14 @@ func (b *Bithumb) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 	var orderID string
 	if s.Side == order.Buy {
 		var result MarketBuy
-		result, err = b.MarketBuyOrder(fPair.Base.String(), s.Amount)
+		result, err = b.MarketBuyOrder(fPair, s.Amount)
 		if err != nil {
 			return submitOrderResponse, err
 		}
 		orderID = result.OrderID
 	} else if s.Side == order.Sell {
 		var result MarketSell
-		result, err = b.MarketSellOrder(fPair.Base.String(), s.Amount)
+		result, err = b.MarketSellOrder(fPair, s.Amount)
 		if err != nil {
 			return submitOrderResponse, err
 		}
@@ -427,22 +498,31 @@ func (b *Bithumb) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (b *Bithumb) ModifyOrder(action *order.Modify) (string, error) {
+func (b *Bithumb) ModifyOrder(action *order.Modify) (order.Modify, error) {
 	if err := action.Validate(); err != nil {
-		return "", err
+		return order.Modify{}, err
 	}
 
-	order, err := b.ModifyTrade(action.ID,
+	o, err := b.ModifyTrade(action.ID,
 		action.Pair.Base.String(),
 		action.Side.Lower(),
 		action.Amount,
 		int64(action.Price))
 
 	if err != nil {
-		return "", err
+		return order.Modify{}, err
 	}
 
-	return order.Data[0].ContID, nil
+	return order.Modify{
+		Exchange:  action.Exchange,
+		AssetType: action.AssetType,
+		Pair:      action.Pair,
+		ID:        o.Data[0].ContID,
+
+		Price:  float64(int64(action.Price)),
+		Amount: action.Amount,
+		Side:   action.Side,
+	}, nil
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -524,7 +604,6 @@ func (b *Bithumb) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request)
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	v, err := b.WithdrawCrypto(withdrawRequest.Crypto.Address,
 		withdrawRequest.Crypto.AddressTag,
 		withdrawRequest.Currency.String(),
@@ -544,7 +623,6 @@ func (b *Bithumb) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdra
 	if err := withdrawRequest.Validate(); err != nil {
 		return nil, err
 	}
-
 	if math.Mod(withdrawRequest.Amount, 1) != 0 {
 		return nil, errors.New("currency KRW does not support decimal places")
 	}
@@ -567,7 +645,7 @@ func (b *Bithumb) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdra
 }
 
 // WithdrawFiatFundsToInternationalBank is not supported as Bithumb only withdraws KRW to South Korean banks
-func (b *Bithumb) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (b *Bithumb) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
@@ -585,43 +663,50 @@ func (b *Bithumb) GetActiveOrders(req *order.GetOrdersRequest) ([]order.Detail, 
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
+
+	if len(req.Pairs) == 0 {
+		return nil, errNotEnoughPairs
+	}
+
+	format, err := b.GetPairFormat(req.AssetType, false)
+	if err != nil {
+		return nil, err
+	}
+
 	var orders []order.Detail
-	resp, err := b.GetOrders("", "", "1000", "", "")
-	if err != nil {
-		return nil, err
-	}
-
-	format, err := b.GetPairFormat(asset.Spot, false)
-	if err != nil {
-		return nil, err
-	}
-
-	for i := range resp.Data {
-		if resp.Data[i].Status != "placed" {
-			continue
+	for x := range req.Pairs {
+		resp, err := b.GetOrders("", "", "1000", "", req.Pairs[x].Base.String())
+		if err != nil {
+			return nil, err
 		}
 
-		orderDate := time.Unix(resp.Data[i].OrderDate, 0)
-		orderDetail := order.Detail{
-			Amount:          resp.Data[i].Units,
-			Exchange:        b.Name,
-			ID:              resp.Data[i].OrderID,
-			Date:            orderDate,
-			Price:           resp.Data[i].Price,
-			RemainingAmount: resp.Data[i].UnitsRemaining,
-			Status:          order.Active,
-			Pair: currency.NewPairWithDelimiter(resp.Data[i].OrderCurrency,
-				resp.Data[i].PaymentCurrency,
-				format.Delimiter),
-		}
+		for i := range resp.Data {
+			if resp.Data[i].Status != "placed" {
+				continue
+			}
 
-		if resp.Data[i].Type == "bid" {
-			orderDetail.Side = order.Buy
-		} else if resp.Data[i].Type == "ask" {
-			orderDetail.Side = order.Sell
-		}
+			orderDate := time.Unix(resp.Data[i].OrderDate, 0)
+			orderDetail := order.Detail{
+				Amount:          resp.Data[i].Units,
+				Exchange:        b.Name,
+				ID:              resp.Data[i].OrderID,
+				Date:            orderDate,
+				Price:           resp.Data[i].Price,
+				RemainingAmount: resp.Data[i].UnitsRemaining,
+				Status:          order.Active,
+				Pair: currency.NewPairWithDelimiter(resp.Data[i].OrderCurrency,
+					resp.Data[i].PaymentCurrency,
+					format.Delimiter),
+			}
 
-		orders = append(orders, orderDetail)
+			if resp.Data[i].Type == "bid" {
+				orderDetail.Side = order.Buy
+			} else if resp.Data[i].Type == "ask" {
+				orderDetail.Side = order.Sell
+			}
+
+			orders = append(orders, orderDetail)
+		}
 	}
 
 	order.FilterOrdersBySide(&orders, req.Side)
@@ -637,42 +722,48 @@ func (b *Bithumb) GetOrderHistory(req *order.GetOrdersRequest) ([]order.Detail, 
 		return nil, err
 	}
 
+	if len(req.Pairs) == 0 {
+		return nil, errNotEnoughPairs
+	}
+
+	format, err := b.GetPairFormat(req.AssetType, false)
+	if err != nil {
+		return nil, err
+	}
+
 	var orders []order.Detail
-	resp, err := b.GetOrders("", "", "1000", "", "")
-	if err != nil {
-		return nil, err
-	}
-
-	format, err := b.GetPairFormat(asset.Spot, false)
-	if err != nil {
-		return nil, err
-	}
-
-	for i := range resp.Data {
-		if resp.Data[i].Status == "placed" {
-			continue
+	for x := range req.Pairs {
+		resp, err := b.GetOrders("", "", "1000", "", req.Pairs[x].Base.String())
+		if err != nil {
+			return nil, err
 		}
 
-		orderDate := time.Unix(resp.Data[i].OrderDate, 0)
-		orderDetail := order.Detail{
-			Amount:          resp.Data[i].Units,
-			Exchange:        b.Name,
-			ID:              resp.Data[i].OrderID,
-			Date:            orderDate,
-			Price:           resp.Data[i].Price,
-			RemainingAmount: resp.Data[i].UnitsRemaining,
-			Pair: currency.NewPairWithDelimiter(resp.Data[i].OrderCurrency,
-				resp.Data[i].PaymentCurrency,
-				format.Delimiter),
-		}
+		for i := range resp.Data {
+			if resp.Data[i].Status == "placed" {
+				continue
+			}
 
-		if resp.Data[i].Type == "bid" {
-			orderDetail.Side = order.Buy
-		} else if resp.Data[i].Type == "ask" {
-			orderDetail.Side = order.Sell
-		}
+			orderDate := time.Unix(resp.Data[i].OrderDate, 0)
+			orderDetail := order.Detail{
+				Amount:          resp.Data[i].Units,
+				Exchange:        b.Name,
+				ID:              resp.Data[i].OrderID,
+				Date:            orderDate,
+				Price:           resp.Data[i].Price,
+				RemainingAmount: resp.Data[i].UnitsRemaining,
+				Pair: currency.NewPairWithDelimiter(resp.Data[i].OrderCurrency,
+					resp.Data[i].PaymentCurrency,
+					format.Delimiter),
+			}
 
-		orders = append(orders, orderDetail)
+			if resp.Data[i].Type == "bid" {
+				orderDetail.Side = order.Buy
+			} else if resp.Data[i].Type == "ask" {
+				orderDetail.Side = order.Sell
+			}
+
+			orders = append(orders, orderDetail)
+		}
 	}
 
 	order.FilterOrdersBySide(&orders, req.Side)
@@ -782,4 +873,13 @@ func (b *Bithumb) GetHistoricCandles(pair currency.Pair, a asset.Item, start, en
 // GetHistoricCandlesExtended returns candles between a time period for a set time interval
 func (b *Bithumb) GetHistoricCandlesExtended(pair currency.Pair, a asset.Item, start, end time.Time, interval kline.Interval) (kline.Item, error) {
 	return b.GetHistoricCandles(pair, a, start, end, interval)
+}
+
+// UpdateOrderExecutionLimits sets exchange executions for a required asset type
+func (b *Bithumb) UpdateOrderExecutionLimits(_ asset.Item) error {
+	limits, err := b.FetchExchangeLimits()
+	if err != nil {
+		return fmt.Errorf("cannot update exchange execution limits: %w", err)
+	}
+	return b.LoadLimits(limits)
 }

@@ -535,21 +535,25 @@ func (a *Alphapoint) SendHTTPRequest(ep exchange.URL, method, path string, data 
 		return errors.New("unable to JSON request")
 	}
 
-	return a.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:        method,
 		Path:          path,
 		Headers:       headers,
-		Body:          bytes.NewBuffer(PayloadJSON),
 		Result:        result,
 		Verbose:       a.Verbose,
 		HTTPDebugging: a.HTTPDebugging,
-		HTTPRecording: a.HTTPRecording})
+		HTTPRecording: a.HTTPRecording}
+
+	return a.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		item.Body = bytes.NewBuffer(PayloadJSON)
+		return item, nil
+	})
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated request
 func (a *Alphapoint) SendAuthenticatedHTTPRequest(ep exchange.URL, method, path string, data map[string]interface{}, result interface{}) error {
 	if !a.AllowAuthenticatedRequest() {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, a.Name)
+		return fmt.Errorf("%s %w", a.Name, exchange.ErrAuthenticatedRequestWithoutCredentialsSet)
 	}
 
 	endpoint, err := a.API.Endpoints.GetURL(ep)
@@ -574,15 +578,19 @@ func (a *Alphapoint) SendAuthenticatedHTTPRequest(ep exchange.URL, method, path 
 		return errors.New("unable to JSON request")
 	}
 
-	return a.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:        method,
 		Path:          path,
 		Headers:       headers,
-		Body:          bytes.NewBuffer(PayloadJSON),
 		Result:        result,
 		AuthRequest:   true,
 		NonceEnabled:  true,
 		Verbose:       a.Verbose,
 		HTTPDebugging: a.HTTPDebugging,
-		HTTPRecording: a.HTTPRecording})
+		HTTPRecording: a.HTTPRecording}
+
+	return a.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		item.Body = bytes.NewBuffer(PayloadJSON)
+		return item, nil
+	})
 }

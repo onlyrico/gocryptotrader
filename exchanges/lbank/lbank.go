@@ -504,13 +504,18 @@ func (l *Lbank) SendHTTPRequest(ep exchange.URL, path string, result interface{}
 	if err != nil {
 		return err
 	}
-	return l.SendPayload(context.Background(), &request.Item{
+
+	item := &request.Item{
 		Method:        http.MethodGet,
 		Path:          endpoint + path,
 		Result:        result,
 		Verbose:       l.Verbose,
 		HTTPDebugging: l.HTTPDebugging,
 		HTTPRecording: l.HTTPRecording,
+	}
+
+	return l.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
 	})
 }
 
@@ -556,7 +561,7 @@ func (l *Lbank) sign(data string) (string, error) {
 // SendAuthHTTPRequest sends an authenticated request
 func (l *Lbank) SendAuthHTTPRequest(method, endpoint string, vals url.Values, result interface{}) error {
 	if !l.AllowAuthenticatedRequest() {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, l.Name)
+		return fmt.Errorf("%s %w", l.Name, exchange.ErrAuthenticatedRequestWithoutCredentialsSet)
 	}
 
 	if vals == nil {
@@ -574,15 +579,19 @@ func (l *Lbank) SendAuthHTTPRequest(method, endpoint string, vals url.Values, re
 	headers := make(map[string]string)
 	headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-	return l.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:        method,
 		Path:          endpoint,
 		Headers:       headers,
-		Body:          bytes.NewBufferString(payload),
 		Result:        result,
 		AuthRequest:   true,
 		Verbose:       l.Verbose,
 		HTTPDebugging: l.HTTPDebugging,
 		HTTPRecording: l.HTTPRecording,
+	}
+
+	return l.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		item.Body = bytes.NewBufferString(payload)
+		return item, nil
 	})
 }

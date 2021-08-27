@@ -60,8 +60,8 @@ func TestExchange_Exchanges(t *testing.T) {
 	t.Parallel()
 	x := exchangeTest.Exchanges(false)
 	y := len(x)
-	if y != 28 {
-		t.Fatalf("expected 28 received %v", y)
+	if y != 1 {
+		t.Fatalf("expected 1 received %v", y)
 	}
 }
 
@@ -206,7 +206,10 @@ func setupEngine() (err error) {
 		return err
 	}
 
-	return engine.Bot.LoadExchange(exchName, false, nil)
+	em := engine.SetupExchangeManager()
+	engine.Bot.ExchangeManager = em
+
+	return engine.Bot.LoadExchange(exchName, nil)
 }
 
 func cleanup() {
@@ -217,8 +220,12 @@ func cleanup() {
 }
 
 func configureExchangeKeys() bool {
-	ex := engine.Bot.GetExchangeByName(exchName).GetBase()
-	ex.SetAPIKeys(exchAPIKEY, exchAPISECRET, exchClientID)
-	ex.SkipAuthCheck = true
-	return ex.ValidateAPICredentials()
+	ex, err := engine.Bot.GetExchangeByName(exchName)
+	if err != nil {
+		return false
+	}
+	b := ex.GetBase()
+	b.SetAPIKeys(exchAPIKEY, exchAPISECRET, exchClientID)
+	b.SkipAuthCheck = true
+	return b.ValidateAPICredentials()
 }

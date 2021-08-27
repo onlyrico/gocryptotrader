@@ -336,14 +336,14 @@ func (h *HUOBI) FetchTradablePairs(a asset.Item) ([]string, error) {
 
 	var pairs []string
 
+	format, err := h.GetPairFormat(a, false)
+	if err != nil {
+		return nil, err
+	}
+
 	switch a {
 	case asset.Spot:
 		symbols, err := h.GetSymbols()
-		if err != nil {
-			return nil, err
-		}
-
-		format, err := h.GetPairFormat(a, false)
 		if err != nil {
 			return nil, err
 		}
@@ -365,10 +365,13 @@ func (h *HUOBI) FetchTradablePairs(a asset.Item) ([]string, error) {
 
 		for z := range symbols {
 			if symbols[z].ContractStatus == 1 {
-				pairs = append(pairs, symbols[z].ContractCode)
+				curr, err := currency.NewPairFromString(symbols[z].ContractCode)
+				if err != nil {
+					return nil, err
+				}
+				pairs = append(pairs, format.Format(curr))
 			}
 		}
-
 	case asset.Futures:
 		symbols, err := h.FGetContractInfo("", "", currency.Pair{})
 		if err != nil {
@@ -377,7 +380,11 @@ func (h *HUOBI) FetchTradablePairs(a asset.Item) ([]string, error) {
 
 		for c := range symbols.Data {
 			if symbols.Data[c].ContractStatus == 1 {
-				pairs = append(pairs, symbols.Data[c].ContractCode)
+				curr, err := currency.NewPairFromString(symbols.Data[c].ContractCode)
+				if err != nil {
+					return nil, err
+				}
+				pairs = append(pairs, format.Format(curr))
 			}
 		}
 	}
@@ -424,12 +431,17 @@ func (h *HUOBI) UpdateTradablePairs(forceUpdate bool) error {
 	return h.UpdatePairs(cp, asset.CoinMarginedFutures, false, forceUpdate)
 }
 
+// UpdateTickers updates the ticker for all currency pairs of a given asset type
+func (h *HUOBI) UpdateTickers(a asset.Item) error {
+	return common.ErrFunctionNotSupported
+}
+
 // UpdateTicker updates and returns the ticker for a currency pair
-func (h *HUOBI) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
-	if !h.SupportsAsset(assetType) {
-		return nil, fmt.Errorf("asset type of %s is not supported by %s", assetType, h.Name)
+func (h *HUOBI) UpdateTicker(p currency.Pair, a asset.Item) (*ticker.Price, error) {
+	if !h.SupportsAsset(a) {
+		return nil, fmt.Errorf("asset type of %s is not supported by %s", a, h.Name)
 	}
-	switch assetType {
+	switch a {
 	case asset.Spot:
 		tickerData, err := h.Get24HrMarketSummary(p)
 		if err != nil {
@@ -471,7 +483,7 @@ func (h *HUOBI) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Pri
 			Bid:          marketData.Tick.Bid[0],
 			Ask:          marketData.Tick.Ask[0],
 			ExchangeName: h.Name,
-			AssetType:    assetType,
+			AssetType:    a,
 		})
 		if err != nil {
 			return nil, err
@@ -492,13 +504,13 @@ func (h *HUOBI) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Pri
 			Bid:          marketData.Tick.Bid[0],
 			Ask:          marketData.Tick.Ask[0],
 			ExchangeName: h.Name,
-			AssetType:    assetType,
+			AssetType:    a,
 		})
 		if err != nil {
 			return nil, err
 		}
 	}
-	return ticker.GetTicker(h.Name, p, assetType)
+	return ticker.GetTicker(h.Name, p, a)
 }
 
 // FetchTicker returns the ticker for a currency pair
@@ -891,8 +903,8 @@ func (h *HUOBI) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (h *HUOBI) ModifyOrder(action *order.Modify) (string, error) {
-	return "", common.ErrFunctionNotSupported
+func (h *HUOBI) ModifyOrder(action *order.Modify) (order.Modify, error) {
+	return order.Modify{}, common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
@@ -1163,7 +1175,7 @@ func (h *HUOBI) GetOrderInfo(orderID string, pair currency.Pair, assetType asset
 }
 
 // GetDepositAddress returns a deposit address for a specified currency
-func (h *HUOBI) GetDepositAddress(cryptocurrency currency.Code, accountID string) (string, error) {
+func (h *HUOBI) GetDepositAddress(cryptocurrency currency.Code, _ string) (string, error) {
 	resp, err := h.QueryDepositAddress(cryptocurrency.Lower().String())
 	return resp.Address, err
 }
@@ -1189,13 +1201,13 @@ func (h *HUOBI) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (h *HUOBI) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (h *HUOBI) WithdrawFiatFunds(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (h *HUOBI) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+func (h *HUOBI) WithdrawFiatFundsToInternationalBank(_ *withdraw.Request) (*withdraw.ExchangeResponse, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
